@@ -22,6 +22,7 @@
 -- params: midi, +/- st, timbre,
 -- probabilities, delay settings,
 -- save ALL to set
+-- nb voices, if nb is installed
 --
 -- plug in grid
 -- (1,1) to (8,2): bits
@@ -46,6 +47,18 @@ engine.name = "Passersby"
 passersby = include "passersby/lib/passersby_engine"
 
 refrain = include "lib/refrain"
+-- optional: https://github.com/sixolet/nb lets the voices play nb players.
+-- use the installed library, or else the copy that another script or mod bundles
+local function find_nb()
+  if util.file_exists(_path.code.."nb/lib/nb.lua") then return "nb/lib/nb" end
+  for _, dir in ipairs(util.scandir(_path.code)) do
+    if util.file_exists(_path.code..dir.."lib/nb/lib/nb.lua") then
+      return dir.."lib/nb/lib/nb"
+    end
+  end
+end
+local nb_path = find_nb()
+local nb = nb_path and include(nb_path) or nil
 MusicUtil = require "musicutil"
 
 seed = 0
@@ -302,7 +315,16 @@ local function midi_out_allowed()
     or params:get("olafur_device") ~= params:get("midi_device")
 end
 
+local function nb_note_off(n)
+  local sounding = voice[n].nb_note
+  if sounding then
+    sounding.player:note_off(sounding.note)
+    voice[n].nb_note = nil
+  end
+end
+
 function notes_off(n)
+  nb_note_off(n)
   for i=1,#voice[n].active_notes do
     if params:get("voice_"..n.."_midi_A") == 2 and midi_out_allowed() then
       m:note_off(voice[n].active_notes[i],0,params:get("midi_A"))
@@ -317,6 +339,7 @@ end
 
 function force_notes_off()
   for n = 1,2 do
+    nb_note_off(n)
     for i=1,#voice[n].active_notes do
       m:note_off(voice[n].active_notes[i],0,params:get("midi_A"))
       m:note_off(voice[n].active_notes[i],0,params:get("midi_B"))
@@ -423,6 +446,13 @@ local function iterate()
               end
               if params:get("voice_"..i.."_w") == 2 then
                 crow.send("ii.wsyn.play_note(".. ((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[1].add)-48)/12 ..", " .. pset_wsyn_vel .. ")")
+              end
+              if nb then
+                -- same octave as the engine
+                local nb_note = (notes[coll][scaled])+(48+(voice[i].octave*12)+semi+random_note[i].add)
+                local player = params:lookup_param("voice_"..i.."_nb"):get_player()
+                player:note_on(nb_note,100/127)
+                voice[i].nb_note = {player = player, note = nb_note}
               end
             --end
           table.insert(voice[i].active_notes,(notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add))
@@ -723,6 +753,8 @@ function init()
     end
   end
 
+  if nb then nb:init() end
+
   params:add_separator("less concepts")
 
   params:add_group("historical load", 3)
@@ -731,7 +763,8 @@ function init()
   params:set_action("set", function (x) selected_set = x end)
   params:add{type = "trigger", id = "load", name = "load", action = historical_loadstate}
 
-  params:add_group("time, midi & outputs", 32)
+  -- each nb voice selector is two params
+  params:add_group("time, midi & outputs", nb and 36 or 32)
   params:add_separator("time (locked with presets)")
   params:add_option("time_div_opt", "time range", {"legacy 1/8 - 1/32", "slow 1/1 - 1/16", "full 2/1 - 1/32"}, 1)
   params:set_action("time_div_opt", function(x)
@@ -875,6 +908,7 @@ function init()
     end
   end)
   params:add_option("voice_1_w", "vox 1 -> w/syn", {"no", "yes"}, 1)
+  if nb then nb:add_param("voice_1_nb", "vox 1 -> nb") end
   params:add_separator("voice 2 outputs")
   params:add_option("voice_2_engine", "vox 2 -> engine", {"no", "yes"}, 2)
   params:add_option("voice_2_midi_A", "vox 2 -> midi ch A", {"no", "yes"}, 1)
@@ -898,6 +932,7 @@ function init()
     end
   end)
   params:add_option("voice_2_w", "vox 2 -> w/syn", {"no", "yes"}, 1)
+  if nb then nb:add_param("voice_2_nb", "vox 2 -> nb") end
 
   params:add_group("scaling & randomization",19)
   params:add_option("scale", "scale", names, 1)
@@ -992,6 +1027,7 @@ function init()
   params:add_group("passersby", 31)
   passersby.add_params()
   wsyn_add_params()
+  if nb then nb:add_player_params() end
   params:bang()
   params:set("wsyn_init",1)
 
@@ -1005,6 +1041,11 @@ function init()
   all_loaded = true
 
 end 
+
+function cleanup()
+  if m then force_notes_off() end
+  if nb then nb:stop_all() end
+end
 
 -- this section is all hardware stuff
 -- hardware: key interaction
