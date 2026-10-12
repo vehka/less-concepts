@@ -296,14 +296,18 @@ local function bang()
   next_seed = out1+out2+out3+out4+out5+out6+out7+out8
 end
 
+-- in olafur mode, don't send notes back to the device that plays the note pool
+local function midi_out_allowed()
+  return params:string("scale") ~= "olafur"
+    or params:get("olafur_device") ~= params:get("midi_device")
+end
+
 function notes_off(n)
   for i=1,#voice[n].active_notes do
-    if params:get("voice_"..n.."_midi_A") == 2 and
-    params:string("scale") ~= "olafur" or (params:string("scale") == "olafur" and (params:get("olafur_device") ~= params:get("midi_device"))) then
+    if params:get("voice_"..n.."_midi_A") == 2 and midi_out_allowed() then
       m:note_off(voice[n].active_notes[i],0,params:get("midi_A"))
     end
-    if params:get("voice_"..n.."_midi_B") == 2 and
-    params:string("scale") ~= "olafur" or (params:string("scale") == "olafur" and (params:get("olafur_device") ~= params:get("midi_device"))) then
+    if params:get("voice_"..n.."_midi_B") == 2 and midi_out_allowed() then
       m:note_off(voice[n].active_notes[i],0,params:get("midi_B"))
     end
     -- engine.noteOff(n)
@@ -400,12 +404,10 @@ local function iterate()
               if params:get("voice_"..i.."_engine") == 2 then
                 engine.noteOn(i,midi_to_hz((notes[coll][scaled])+(48+(voice[i].octave * 12)+semi+random_note[i].add)),100)
               end
-              if params:get("voice_"..i.."_midi_A") == 2 and
-              params:string("scale") ~= "olafur" or (params:string("scale") == "olafur" and (params:get("olafur_device") ~= params:get("midi_device"))) then
+              if params:get("voice_"..i.."_midi_A") == 2 and midi_out_allowed() then
                 m:note_on((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add),100,params:get("midi_A"))
               end
-              if params:get("voice_"..i.."_midi_B") == 2 and
-              params:string("scale") ~= "olafur" or (params:string("scale") == "olafur" and (params:get("olafur_device") ~= params:get("midi_device"))) then
+              if params:get("voice_"..i.."_midi_B") == 2 and midi_out_allowed() then
                 m:note_on((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add),100,params:get("midi_B"))
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
