@@ -23,6 +23,8 @@
 -- probabilities, delay settings,
 -- save ALL to set
 -- nb voices, if nb is installed
+-- chord progression: voices
+-- can snap to its chords
 --
 -- plug in grid
 -- (1,1) to (8,2): bits
@@ -252,6 +254,111 @@ local function scale(lo, hi, received)
   pass_to_refrain = received
 end
 
+-- chord progression: a voice that follows it has its notes moved to the
+-- nearest tone of the current chord
+local ROMAN = {"I", "II", "III", "IV", "V", "VI", "VII"}
+local MAX_CHORD_STEPS = 8
+local chord = {
+  follow = {false, false},
+  strength = 100,
+  sevenths = false,
+  steps = 4,
+  degree = {},
+  beats = {},
+  tones = {}, -- pitch classes of the current chord
+  key = nil, -- what tones and name were built from
+  name = nil -- nil when there is no chord (olafur has no scale to build on)
+}
+
+-- the step is derived from the clock, so it stays in place across tempo and
+-- time division changes
+local function current_chord_step()
+  local total = 0
+  for s = 1,chord.steps do
+    total = total + chord.beats[s]
+  end
+  local pos = clock.get_beats() % total
+  for s = 1,chord.steps do
+    pos = pos - chord.beats[s]
+    if pos < 0 then return s end
+  end
+  return 1
+end
+
+-- chords are stacked thirds on a degree of the selected scale
+local function update_chord()
+  local scale_data = MusicUtil.SCALES[coll]
+  if scale_data == nil then
+    chord.name = nil
+    chord.key = nil
+    return
+  end
+  local intervals = scale_data.intervals
+  local len = #intervals - 1 -- the last interval is the octave
+  local degree = (chord.degree[current_chord_step()] - 1) % len + 1
+  local key = coll.."/"..degree.."/"..(chord.sevenths and 7 or 5)
+  if key == chord.key then return end
+  chord.key = key
+
+  local pcs = {}
+  chord.tones = {}
+  for k = 0,(chord.sevenths and 3 or 2) do
+    pcs[k+1] = intervals[(degree - 1 + k*2) % len + 1] % 12
+    chord.tones[pcs[k+1]] = true
+  end
+  local third = (pcs[2] - pcs[1]) % 12
+  local fifth = (pcs[3] - pcs[1]) % 12
+  local name = ROMAN[degree] or tostring(degree)
+  if third == 3 then name = string.lower(name) end
+  if fifth == 6 then name = name.."o" elseif fifth == 8 then name = name.."+" end
+  if chord.sevenths then name = name.."7" end
+  -- like the note on screen, the root is shown without global transpose
+  chord.name = name.." "..MusicUtil.note_num_to_name(pcs[1])
+end
+
+local function snap_to_chord(note)
+  for d = 0,6 do
+    if chord.tones[(note - d) % 12] then return note - d end
+    if chord.tones[(note + d) % 12] then return note + d end
+  end
+  return note
+end
+
+local function chord_add_params()
+  params:add_group("chord progression", 5 + MAX_CHORD_STEPS*2)
+  for i = 1,2 do
+    params:add_option("chord_follow_"..i, "vox "..i.." follows chords", {"no", "yes"}, 1)
+    params:set_action("chord_follow_"..i, function(x) chord.follow[i] = (x == 2) end)
+  end
+  params:add_control("chord_strength", "snap strength", controlspec.new(0,100,'lin',1,100,'%'))
+  params:set_action("chord_strength", function(x) chord.strength = x end)
+  params:add_option("chord_sevenths", "sevenths", {"no", "yes"}, 1)
+  params:set_action("chord_sevenths", function(x) chord.sevenths = (x == 2) end)
+  params:add_number("chord_steps", "steps", 1, MAX_CHORD_STEPS, 4)
+  params:set_action("chord_steps", function(x)
+    chord.steps = x
+    for s = 1,MAX_CHORD_STEPS do
+      if s <= x then
+        params:show("chord_degree_"..s)
+        params:show("chord_beats_"..s)
+      else
+        params:hide("chord_degree_"..s)
+        params:hide("chord_beats_"..s)
+      end
+    end
+    _menu.rebuild_params()
+  end)
+  local default_degrees = {1, 6, 4, 5}
+  for s = 1,MAX_CHORD_STEPS do
+    chord.degree[s] = default_degrees[s] or 1
+    chord.beats[s] = 4
+    params:add_option("chord_degree_"..s, s..": chord", ROMAN, chord.degree[s])
+    params:set_action("chord_degree_"..s, function(x) chord.degree[s] = x end)
+    params:add_number("chord_beats_"..s, s..": beats", 1, 64, 4)
+    params:set_action("chord_beats_"..s, function(x) chord.beats[s] = x end)
+  end
+end
+
 -- pack the seeds into clusters, compare these against neighborhoods to determine gates in iterate()
 local function bang()
   --redraw()
@@ -405,6 +512,7 @@ local function iterate()
       end
 
       for i = 1,2 do notes_off(i) end
+      if chord.follow[1] or chord.follow[2] then update_chord() end
       seed = next_seed
       bang()
       screennote = nil
@@ -422,40 +530,44 @@ local function iterate()
             else
               random_note[i].add = 0
             end
-            screennote = notes[coll][scaled] + random_note[i].add
+            local pitch = notes[coll][scaled] + random_note[i].add
+            if chord.follow[i] and chord.name and math.random(100) <= chord.strength then
+              pitch = snap_to_chord(pitch)
+            end
+            screennote = pitch
             gridnote = scaled
               if params:get("voice_"..i.."_engine") == 2 then
-                engine.noteOn(i,midi_to_hz((notes[coll][scaled])+(48+(voice[i].octave * 12)+semi+random_note[i].add)),100)
+                engine.noteOn(i,midi_to_hz(pitch+(48+(voice[i].octave * 12)+semi)),100)
               end
               if params:get("voice_"..i.."_midi_A") == 2 and midi_out_allowed() then
-                m:note_on((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add),100,params:get("midi_A"))
+                m:note_on(pitch+(36+(voice[i].octave*12)+semi),100,params:get("midi_A"))
               end
               if params:get("voice_"..i.."_midi_B") == 2 and midi_out_allowed() then
-                m:note_on((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add),100,params:get("midi_B"))
+                m:note_on(pitch+(36+(voice[i].octave*12)+semi),100,params:get("midi_B"))
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
-                crow.output[1].volts = (((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add)-48)/12)
+                crow.output[1].volts = ((pitch+(36+(voice[i].octave*12)+semi)-48)/12)
                 crow.output[2]()
               end
               if params:get("voice_"..i.."_crow_2") == 2 then
-                crow.output[3].volts = (((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add)-48)/12)
+                crow.output[3].volts = ((pitch+(36+(voice[i].octave*12)+semi)-48)/12)
                 crow.output[4]()
               end
               if params:get("voice_"..i.."_JF") == 2 then
-                crow.ii.jf.play_note(((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add)-48)/12,5)
+                crow.ii.jf.play_note((pitch+(36+(voice[i].octave*12)+semi)-48)/12,5)
               end
               if params:get("voice_"..i.."_w") == 2 then
-                crow.send("ii.wsyn.play_note(".. ((notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[1].add)-48)/12 ..", " .. pset_wsyn_vel .. ")")
+                crow.send("ii.wsyn.play_note(".. (pitch+(36+(voice[i].octave*12)+semi)-48)/12 ..", " .. pset_wsyn_vel .. ")")
               end
               if nb then
                 -- same octave as the engine
-                local nb_note = (notes[coll][scaled])+(48+(voice[i].octave*12)+semi+random_note[i].add)
+                local nb_note = pitch+(48+(voice[i].octave*12)+semi)
                 local player = params:lookup_param("voice_"..i.."_nb"):get_player()
                 player:note_on(nb_note,100/127)
                 voice[i].nb_note = {player = player, note = nb_note}
               end
             --end
-          table.insert(voice[i].active_notes,(notes[coll][scaled])+(36+(voice[i].octave*12)+semi+random_note[i].add))
+          table.insert(voice[i].active_notes,pitch+(36+(voice[i].octave*12)+semi))
           end
       end
 
@@ -1022,6 +1134,8 @@ function init()
     end  
   end)
   
+  chord_add_params()
+
   refrain.init()
   
   params:add_group("passersby", 31)
@@ -1325,6 +1439,11 @@ function redraw()
     screen.move(48,32)
     screen.level(edit == "clock" and 15 or 2)
     screen.text("time: "..ppqn_string)
+    if chord.name and (chord.follow[1] or chord.follow[2]) then
+      screen.level(8)
+      screen.move(127,32)
+      screen.text_right(chord.name)
+    end
     
     screen.level(edit == "lc_gate_probs" and 15 or 2)
     screen.move(3,41)
