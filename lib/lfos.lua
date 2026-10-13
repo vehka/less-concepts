@@ -58,6 +58,11 @@ function lfos.tick()
   ticks = ticks + 1
 end
 
+--- the beats played since the sequencer was started
+function lfos.beats()
+  return ticks / PPQN
+end
+
 function lfos.reset()
   ticks = 0
   for _, l in pairs(lfo) do l.rand_cycle = -1 end

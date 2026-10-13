@@ -308,14 +308,15 @@ local chord = {
   name = nil -- nil when there is no chord (olafur has no scale to build on)
 }
 
--- the step is derived from the clock, so it stays in place across tempo and
--- time division changes
+-- the step is derived from the beats played since the sequencer was started,
+-- so it stays in place across tempo and time division changes, and the
+-- progression starts over with the sequence
 local function current_chord_step()
   local total = 0
   for s = 1,chord.steps do
     total = total + chord.beats[s]
   end
-  local pos = clock.get_beats() % total
+  local pos = lfos.beats() % total
   for s = 1,chord.steps do
     pos = pos - chord.beats[s]
     if pos < 0 then return s end
