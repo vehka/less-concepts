@@ -37,7 +37,8 @@
 -- (15,6): clear selected (hold)
 -- (14,6): clear all snapshots (hold)
 -- (9,7) to (16,8): snapshots
--- (1,6) to (3,6): time +/-
+-- (1,8): play/stop
+-- (2,8) to (4,8): time +/-
 --
 -- seek.
 -- think.
@@ -192,22 +193,55 @@ function r()
   norns.script.load(norns.state.script)
 end
 
+-- play was pressed: the sequence starts on the next beat
+local start_pending = false
+
+local function start()
+  p_duration_counter = 1
+  selected_preset = preset_count > 0 and 1 or 0
+  ppqn_counter = math.huge -- the first step plays on the next tick
+  transport_run = true
+end
+
+local function stop()
+  for i=1,2 do
+    notes_off(i)
+  end
+  transport_run = false
+  start_pending = false
+  next_seed = new_seed
+end
+
+local function send_transport()
+  return m and params:get("midi_send_transport") == 2
+end
+
+local function toggle_play()
+  if transport_run or start_pending then
+    stop()
+    if send_transport() then m:stop() end
+  else
+    start_pending = true
+  end
+  screen_dirty = true
+  grid_dirty = true
+end
+
+-- grid led of the play/stop button: bright when playing, mid while waiting
+-- for the beat
+local function play_led()
+  return transport_run and 15 or start_pending and 8 or 3
+end
+
 function clock.transport.start()
   if params:get("midi_transport") == 2 then
-    p_duration_counter = 1
-    selected_preset = preset_count > 0 and 1 or 0
-    ppqn_counter = 1
-    transport_run = true
+    start()
   end
 end
 
 function clock.transport.stop()
   if params:get("midi_transport") == 2 then
-    for i=1,2 do
-      notes_off(i)
-    end
-    transport_run = false
-    next_seed = new_seed
+    stop()
   end
 end
 
@@ -755,6 +789,12 @@ end
 function pulse()
   while true do
     clock.sync(1/ppqn)
+    if start_pending and util.round(clock.get_beats() * ppqn) % ppqn == 0 then
+      start_pending = false
+      start()
+      if send_transport() then m:start() end
+      grid_dirty = true
+    end
     ppqn_counter = ppqn_counter + 1
     iterate()
   end
@@ -876,7 +916,7 @@ function init()
   params:add{type = "trigger", id = "load", name = "load", action = historical_loadstate}
 
   -- each nb voice selector is two params
-  params:add_group("time, midi & outputs", nb and 36 or 32)
+  params:add_group("time, midi & outputs", nb and 38 or 34)
   params:add_separator("time (locked with presets)")
   params:add_option("time_div_opt", "time range", {"legacy 1/8 - 1/32", "slow 1/1 - 1/16", "full 2/1 - 1/32"}, 1)
   params:set_action("time_div_opt", function(x)
@@ -894,6 +934,8 @@ function init()
     end
   end)
   params:add_number("p_duration", "default length (cycle): ", 1, 32, 4)
+  params:add_trigger("play_stop", "play/stop")
+  params:set_action("play_stop", toggle_play)
   p_duration = params:get("p_duration")
 
   params:add_separator("midi")
@@ -989,6 +1031,7 @@ function init()
   params:add_number("midi_A", "midi ch A", 1,16,1)
   params:add_number("midi_B", "midi ch B", 1,16,1)
   params:add_option("midi_transport", "start/stop with transport", {"off", "on"}, 2)
+  params:add_option("midi_send_transport", "send start/stop", {"off", "on"}, 1)
   params:set_action("midi_transport", function (x) 
     -- if x == 1 then transport_run = true end
   end)
@@ -1617,14 +1660,17 @@ end
 g.key = function(x,y,z)
   -- buttons for clock divisions
   if g.cols >= 16 then
-    if y == 8 and x >= 1 and x <= 3 then
+    if y == 8 and x >= 1 and x <= 4 then
       if y == 8 and x == 1 and z == 1 then
-        sel_ppqn_div = util.clamp(sel_ppqn_div - 1, 1, #ppqn_divisions) 
+        toggle_play()
       end
       if y == 8 and x == 2 and z == 1 then
+        sel_ppqn_div = util.clamp(sel_ppqn_div - 1, 1, #ppqn_divisions) 
+      end
+      if y == 8 and x == 3 and z == 1 then
         sel_ppqn_div = math.floor((#ppqn_divisions + 1) / 2)
       end
-      if y == 8 and x == 3 and z == 1then
+      if y == 8 and x == 4 and z == 1 then
         sel_ppqn_div = util.clamp(sel_ppqn_div + 1, 1, #ppqn_divisions)
       end
 
@@ -1753,8 +1799,12 @@ g.key = function(x,y,z)
       end
     end
   else
+    -- play/stop
+    if y == 5 and x == 1 then
+      if z == 1 then toggle_play() end
+
     -- buttons for changing cycle modes
-    if y == 6 and x >= 1 and x <= 3 and preset_count > 0 then
+    elseif y == 6 and x >= 1 and x <= 3 and preset_count > 0 then
       if z == 1 then
         press_counter[x+8] = clock.run(long_press, x+8)
       elseif z == 0 then
@@ -1971,9 +2021,12 @@ function grid_redraw()
     local off_temp = util.round(15 / #ppqn_divisions) --creates offset for led_low_temp
     local led_low_temp = off_temp + util.round((1-(sel_ppqn_div/#ppqn_divisions))*15) --calculates led brightness
     local led_high_temp = 15 - util.round((1-(sel_ppqn_div/#ppqn_divisions))*15)
-    g:led(1, 8, led_low_temp)
-    g:led(2, 8, 8)
-    g:led(3, 8, led_high_temp)
+    g:led(2, 8, led_low_temp)
+    g:led(3, 8, 8)
+    g:led(4, 8, led_high_temp)
+
+    --led for play/stop
+    g:led(1, 8, play_led())
 
     --leds for cycling modes
     if preset_count > 0 then
@@ -2099,6 +2152,9 @@ function grid_redraw()
     -- g:led(1, 8, led_low_temp)
     -- g:led(2, 8, 8)
     -- g:led(3, 8, led_high_temp)
+
+    --led for play/stop
+    g:led(1, 5, play_led())
 
     --leds for cycling modes
     if preset_count > 0 then
