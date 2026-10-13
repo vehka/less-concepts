@@ -1229,7 +1229,11 @@ function init()
   -- the lfos can move the parameters of the voices
   local nb_first = #params.params + 1
   if nb then nb:add_player_params() end
-  lfos.add_param_lfos({"passersby", "w/syn"}, nb_first, #params.params)
+  lfos.add_param_lfos({
+    {name = "less concepts", params = {
+      "gate prob 1", "gate prob 2", "tran prob 1", "tran prob 2",
+      "transpose 1", "transpose 2", "global transpose", "chord_strength"}},
+    "passersby", "w/syn"}, nb_first, #params.params)
   lfos.send_cc = function(cc, value, channel)
     if m then m:cc(cc, value, channel) end
   end
@@ -2010,9 +2014,9 @@ function grid_redraw()
     g:led(16,3,4)
 
     --leds for lfos
-    g:led(6,3,lfos.is_on("bits") and 15 or 1)
-    g:led(9,3,lfos.is_on("range") and 15 or 1)
-    g:led(12,3,lfos.is_on("octs") and 15 or 1)
+    g:led(6,3,lfos.is_on("bits") and 15 or 2)
+    g:led(9,3,lfos.is_on("range") and 15 or 2)
+    g:led(12,3,lfos.is_on("octs") and 15 or 2)
 
     --light up all available preses
     for i=7,8 do
@@ -2236,7 +2240,7 @@ function grid_redraw()
 
     --leds for lfos
     for i, id in ipairs(lfos.ids) do
-      g:led(i+2, 5, lfos.is_on(id) and 15 or 1)
+      g:led(i+2, 5, lfos.is_on(id) and 15 or 2)
     end
 
     --leds for cycling modes

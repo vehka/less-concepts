@@ -219,7 +219,9 @@ end
 -- the targets of the param LFOs come in groups: none, a MIDI CC, and the
 -- parameter groups of the voices
 local NONE, CC = 1, 2
-local fixed_groups = {} -- ids of parameter groups that are always listed
+-- groups that are always listed: the id of a parameter group, or a
+-- { name = , params = { ids } } with a pick of parameters
+local fixed_groups = {}
 local scan_first, scan_last -- parameters to look for more groups in
 local groups = {} -- [group_index] = { name = , params = {} }
 local group_key = ""
@@ -242,8 +244,16 @@ local function find_groups()
       table.insert(found, { id = g.id, name = g.name, params = members })
     end
   end
-  for _, id in ipairs(fixed_groups) do
-    if params.lookup[id] then add(params.lookup[id]) end
+  for _, group in ipairs(fixed_groups) do
+    if type(group) == "table" then
+      local members = {}
+      for _, id in ipairs(group.params) do
+        table.insert(members, params:lookup_param(id))
+      end
+      table.insert(found, { id = group.name, name = group.name, params = members })
+    elseif params.lookup[group] then
+      add(params.lookup[group])
+    end
   end
   for index = scan_first or 1, scan_last or 0 do
     if params.params[index].t == params.tGROUP and not params.hidden[index] then
@@ -322,7 +332,8 @@ local function percent(param)
 end
 
 --- add the param LFOs. Call this after the parameters they can move.
--- @param group_ids ids of the parameter groups that can always be picked
+-- @param group_ids the groups that can always be picked: ids of parameter
+-- groups, or tables { name = , params = { ids } }
 -- @param first, last indexes of the parameters among which the groups
 -- that are shown can be picked too (optional)
 function lfos.add_param_lfos(group_ids, first, last)
