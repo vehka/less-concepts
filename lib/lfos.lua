@@ -4,8 +4,8 @@
 -- for the octaves. An LFO moves its values around the ones that are set,
 -- by a whole number of steps. It is read when a step plays.
 --
--- four more LFOs can each move any parameter, or send a MIDI CC. A parameter
--- keeps its value: the LFO calls its action with values around it.
+-- four more LFOs can each move a parameter of a voice, or send a MIDI CC.
+-- A parameter keeps its value: the LFO calls its action with values around it.
 --
 -- a cycle is a length in beats, counted in the ticks of the sequencer since
 -- it was started, so the LFOs stand still while it is stopped and start
@@ -50,7 +50,7 @@ for i = 1, NUMBER_OF_PARAM_LFOS do
   param_lfo[i] = {
     on = false,
     target_id = "", -- "", "cc" or the id of a parameter
-    target_index = 1,
+    group_index = 1, target_index = 1,
     kind = nil, -- "param" or "cc" when there is something to move
     param = nil,
     cc = 1, channel = 1, center = 64,
@@ -216,48 +216,129 @@ function lfos.add_params()
   params:set_action("lfo_randomize", lfos.randomize)
 end
 
--- the parameters a param LFO can move: the ones with a range of numbers
-local function param_targets()
-  local ids, names, count = { "", "cc" }, { "none", "midi cc" }, {}
+-- the targets of the param LFOs come in groups: none, a MIDI CC, and the
+-- parameter groups of the voices
+local NONE, CC = 1, 2
+local fixed_groups = {} -- ids of parameter groups that are always listed
+local scan_first, scan_last -- parameters to look for more groups in
+local groups = {} -- [group_index] = { name = , params = {} }
+local group_key = ""
+
+-- the groups that are there now: the fixed ones, and the ones between
+-- scan_first and scan_last that are shown. That is how the nb voices that
+-- are in use turn up: nb shows the parameters of those and hides the rest
+local function find_groups()
   local found = {}
-  for _, p in ipairs(params.params) do
-    if (p.t == params.tNUMBER or p.t == params.tCONTROL or p.t == params.tTAPER)
-        and p.id and p.id:sub(1, 4) ~= "lfo_" then
-      table.insert(found, p)
-      count[p.name] = (count[p.name] or 0) + 1
+  local function add(index)
+    local g = params.params[index]
+    local members = {}
+    for k = index + 1, index + g.n do
+      local p = params.params[k]
+      if p.t == params.tNUMBER or p.t == params.tCONTROL or p.t == params.tTAPER then
+        table.insert(members, p)
+      end
+    end
+    if #members > 0 then
+      table.insert(found, { id = g.id, name = g.name, params = members })
     end
   end
-  for _, p in ipairs(found) do
-    table.insert(ids, p.id)
-    -- a name that several parameters have does not tell them apart
-    table.insert(names, count[p.name] == 1 and p.name or p.id)
+  for _, id in ipairs(fixed_groups) do
+    if params.lookup[id] then add(params.lookup[id]) end
   end
-  return ids, names
+  for index = scan_first or 1, scan_last or 0 do
+    if params.params[index].t == params.tGROUP and not params.hidden[index] then
+      add(index)
+    end
+  end
+  return found
+end
+
+local function set_options(id, options, selected)
+  local p = params:lookup_param(id)
+  p.options = options
+  p.count = #options
+  p.selected = selected
+end
+
+-- work out what an LFO moves from the id that is saved for it. An id of a
+-- parameter that is not in any group now stays saved, and the LFO waits
+-- for its group to come back
+local function resolve(i)
+  local l = param_lfo[i]
+  local p = "lfo_p" .. i
+  release(l)
+  l.group_index, l.target_index = NONE, 1
+  l.kind, l.param = nil, nil
+  if l.target_id == "cc" then
+    l.group_index, l.kind = CC, "cc"
+  else
+    for g, group in ipairs(groups) do
+      for t, param in ipairs(group.params) do
+        if param.id == l.target_id then
+          l.group_index, l.target_index = g + CC, t
+          l.kind, l.param = "param", param
+        end
+      end
+    end
+  end
+
+  local names = { "none", "midi cc" }
+  for _, group in ipairs(groups) do table.insert(names, group.name) end
+  set_options(p .. "_group", names, l.group_index)
+  local targets = { "-" }
+  if l.kind == "param" then
+    targets = {}
+    for _, param in ipairs(groups[l.group_index - CC].params) do
+      table.insert(targets, param.name)
+    end
+  end
+  set_options(p .. "_target", targets, l.target_index)
+
+  if l.kind == "param" then params:show(p .. "_target") else params:hide(p .. "_target") end
+  for _, name in ipairs({ "_cc", "_channel", "_center" }) do
+    if l.kind == "cc" then params:show(p .. name) else params:hide(p .. name) end
+  end
+end
+
+local function resolve_all()
+  for i = 1, NUMBER_OF_PARAM_LFOS do resolve(i) end
+  _menu.rebuild_params()
+end
+
+-- look at the groups again: they change when a voice is picked or dropped
+local function refresh_groups()
+  local found = find_groups()
+  local ids = {}
+  for _, group in ipairs(found) do table.insert(ids, group.id) end
+  local key = table.concat(ids, "\n")
+  if key == group_key then return end
+  group_key = key
+  groups = found
+  resolve_all()
 end
 
 local function percent(param)
   return param:get() .. "%"
 end
 
---- add the param LFOs. Call this after all other parameters are added,
--- since those are what the LFOs can pick from
-function lfos.add_param_lfos()
-  local ids, names = param_targets()
+--- add the param LFOs. Call this after the parameters they can move.
+-- @param group_ids ids of the parameter groups that can always be picked
+-- @param first, last indexes of the parameters among which the groups
+-- that are shown can be picked too (optional)
+function lfos.add_param_lfos(group_ids, first, last)
+  fixed_groups, scan_first, scan_last = group_ids, first, last
+  groups = find_groups()
   local rate_names = {}
   for k, rate in ipairs(param_rates) do rate_names[k] = rate[1] end
 
-  params:add_group("param lfos", NUMBER_OF_PARAM_LFOS * 10)
+  params:add_group("param lfos", NUMBER_OF_PARAM_LFOS * 11)
   for i, l in ipairs(param_lfo) do
     local p = "lfo_p" .. i
 
     local function set_target(id)
-      release(l)
       l.target_id = id
-      l.param = params.lookup[id] and params.params[params.lookup[id]] or nil
-      l.kind = id == "cc" and "cc" or l.param and "param" or nil
-      for _, name in ipairs({ "_cc", "_channel", "_center" }) do
-        if l.kind == "cc" then params:show(p .. name) else params:hide(p .. name) end
-      end
+      params:set(p .. "_target_id", id, true)
+      resolve(i)
       _menu.rebuild_params()
     end
 
@@ -267,12 +348,29 @@ function lfos.add_param_lfos()
       l.on = value == 2
       if not l.on then release(l) end
     end)
-    -- the target is saved as the id of its parameter, so that it stays the
-    -- same when the list of parameters changes
+    -- what is saved is the id of the target, so that it stays the same when
+    -- the groups and their parameters change
     params:add_text(p .. "_target_id", "target id", "")
     params:hide(p .. "_target_id")
-    params:add_option(p .. "_target", "target", names, 1)
+    params:set_action(p .. "_target_id", function(id)
+      l.target_id = id
+      resolve(i)
+      _menu.rebuild_params()
+    end)
+    params:add_option(p .. "_group", "target group", { "none", "midi cc" }, 1)
+    params:set_save(p .. "_group", false)
+    params:set_action(p .. "_group", function(index)
+      if index == l.group_index then return end
+      if index == NONE then set_target("")
+      elseif index == CC then set_target("cc")
+      else set_target(groups[index - CC].params[1].id) end
+    end)
+    params:add_option(p .. "_target", "target", { "-" }, 1)
     params:set_save(p .. "_target", false)
+    params:set_action(p .. "_target", function(index)
+      if index == l.target_index or l.kind ~= "param" then return end
+      set_target(groups[l.group_index - CC].params[index].id)
+    end)
     params:add_number(p .. "_cc", "cc", 0, 127, 1)
     params:set_action(p .. "_cc", function(value) l.cc = value l.sent = nil end)
     params:add_number(p .. "_channel", "channel", 1, 16, 1)
@@ -285,19 +383,14 @@ function lfos.add_param_lfos()
     params:set_action(p .. "_rate", function(value) l.beats = param_rates[value][2] end)
     params:add_number(p .. "_depth", "depth", 0, 100, 50, percent)
     params:set_action(p .. "_depth", function(value) l.depth = value / 100 end)
-
-    params:set_action(p .. "_target_id", function(id)
-      l.target_index = tab.key(ids, id) or 1
-      params:set(p .. "_target", l.target_index, true)
-      set_target(id)
-    end)
-    params:set_action(p .. "_target", function(index)
-      if index == l.target_index then return end
-      l.target_index = index
-      params:set(p .. "_target_id", ids[index], true)
-      set_target(ids[index])
-    end)
   end
+
+  clock.run(function()
+    while true do
+      clock.sleep(0.5)
+      refresh_groups()
+    end
+  end)
 end
 
 return lfos

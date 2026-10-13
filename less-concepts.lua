@@ -26,7 +26,7 @@
 -- chord progression: voices
 -- can snap to its chords
 -- lfos: bits, low/high, octaves,
--- any parameter or a midi cc
+-- voice parameters or a midi cc
 --
 -- plug in grid
 -- (1,1) to (8,2): bits
@@ -1226,8 +1226,10 @@ function init()
   params:add_group("passersby", 31)
   passersby.add_params()
   wsyn_add_params()
+  -- the lfos can move the parameters of the voices
+  local nb_first = #params.params + 1
   if nb then nb:add_player_params() end
-  lfos.add_param_lfos()
+  lfos.add_param_lfos({"passersby", "w/syn"}, nb_first, #params.params)
   lfos.send_cc = function(cc, value, channel)
     if m then m:cc(cc, value, channel) end
   end
