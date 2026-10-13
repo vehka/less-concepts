@@ -31,6 +31,8 @@
 -- (1, 9) and (2, 9) : mute bits
 -- (10,1) to (16,2): octaves
 -- (1,3) to (16,3): randomize
+-- (6,3), (9,3), (12,3): lfos for
+-- bits, low/high, octaves
 -- (2,5) + (1,4) to (16,5): low
 -- (1,5) + (1,4) to (16,5): high
 -- (16,6): take snapshot
@@ -50,6 +52,7 @@ engine.name = "Passersby"
 passersby = include "passersby/lib/passersby_engine"
 
 refrain = include "lib/refrain"
+local lfos = include "lib/lfos"
 -- optional: https://github.com/sixolet/nb lets the voices play nb players.
 -- use the installed library, or else the copy that another script or mod bundles
 local function find_nb()
@@ -200,6 +203,7 @@ local function start()
   p_duration_counter = 1
   selected_preset = preset_count > 0 and 1 or 0
   ppqn_counter = math.huge -- the first step plays on the next tick
+  lfos.reset()
   transport_run = true
 end
 
@@ -491,6 +495,35 @@ end
 
 -- if user-defined bit in the binary version of a seed equals 1, then note event [aka, bit-wise gating]
 
+-- the bits, low/high and octaves as their LFOs move them. The values that
+-- are set stay as they are, so snapshots keep those
+
+local function mod_clamp(value, offset, lo, hi)
+  if offset == 0 then return value end
+  return util.clamp(value + offset, math.min(value, lo), math.max(value, hi))
+end
+
+-- the bits are a ring: a voice moves around it, and a muted voice stays muted
+local function mod_bit(i)
+  local bit = voice[i].bit
+  if bit == 0 then return 0 end
+  return util.wrap(bit + lfos.offset("bits", i), 1, 8)
+end
+
+-- low/high and the octaves stay inside the randomization limits
+local function mod_range()
+  local top = math.min(32, #notes[coll])
+  return mod_clamp(new_low, lfos.offset("range", 1),
+      params:get("lo_clamp_min"), math.min(params:get("lo_clamp_max"), top)),
+    mod_clamp(new_high, lfos.offset("range", 2),
+      params:get("hi_clamp_min"), math.min(params:get("hi_clamp_max"), top))
+end
+
+local function mod_octave(i)
+  return mod_clamp(voice[i].octave, lfos.offset("octs", i),
+    params:get("oct_clamp_min"), params:get("oct_clamp_max"))
+end
+
 local function iterate()
   if transport_run then
     if preset_count == 0 then 
@@ -553,10 +586,12 @@ local function iterate()
       gridnote = nil
       for i = 1,2 do
         display_voice[i] = false
-        if seed_as_binary[voice[i].bit] == 1 and tab.count(notes[coll]) ~= 0 then
+        local octave = mod_octave(i)
+        if seed_as_binary[mod_bit(i)] == 1 and tab.count(notes[coll]) ~= 0 then
           random_gate[i].comparator = math.random(0,100)
           if random_gate[i].comparator < random_gate[i].probability then
-            scale(new_low,new_high,seed)
+            local low, high = mod_range()
+            scale(low,high,seed)
             random_note[i].comparator = math.random(0,100)
             display_voice[i] = true
             if random_note[i].comparator < random_note[i].probability then
@@ -571,37 +606,37 @@ local function iterate()
             screennote = pitch
             gridnote = scaled
               if params:get("voice_"..i.."_engine") == 2 then
-                engine.noteOn(i,midi_to_hz(pitch+(48+(voice[i].octave * 12)+semi)),100)
+                engine.noteOn(i,midi_to_hz(pitch+(48+(octave * 12)+semi)),100)
               end
               if params:get("voice_"..i.."_midi_A") == 2 and midi_out_allowed() then
-                m:note_on(pitch+(36+(voice[i].octave*12)+semi),100,params:get("midi_A"))
+                m:note_on(pitch+(36+(octave*12)+semi),100,params:get("midi_A"))
               end
               if params:get("voice_"..i.."_midi_B") == 2 and midi_out_allowed() then
-                m:note_on(pitch+(36+(voice[i].octave*12)+semi),100,params:get("midi_B"))
+                m:note_on(pitch+(36+(octave*12)+semi),100,params:get("midi_B"))
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
-                crow.output[1].volts = ((pitch+(36+(voice[i].octave*12)+semi)-48)/12)
+                crow.output[1].volts = ((pitch+(36+(octave*12)+semi)-48)/12)
                 crow.output[2]()
               end
               if params:get("voice_"..i.."_crow_2") == 2 then
-                crow.output[3].volts = ((pitch+(36+(voice[i].octave*12)+semi)-48)/12)
+                crow.output[3].volts = ((pitch+(36+(octave*12)+semi)-48)/12)
                 crow.output[4]()
               end
               if params:get("voice_"..i.."_JF") == 2 then
-                crow.ii.jf.play_note((pitch+(36+(voice[i].octave*12)+semi)-48)/12,5)
+                crow.ii.jf.play_note((pitch+(36+(octave*12)+semi)-48)/12,5)
               end
               if params:get("voice_"..i.."_w") == 2 then
-                crow.send("ii.wsyn.play_note(".. (pitch+(36+(voice[i].octave*12)+semi)-48)/12 ..", " .. pset_wsyn_vel .. ")")
+                crow.send("ii.wsyn.play_note(".. (pitch+(36+(octave*12)+semi)-48)/12 ..", " .. pset_wsyn_vel .. ")")
               end
               if nb then
                 -- same octave as the engine
-                local nb_note = pitch+(48+(voice[i].octave*12)+semi)
+                local nb_note = pitch+(48+(octave*12)+semi)
                 local player = params:lookup_param("voice_"..i.."_nb"):get_player()
                 player:note_on(nb_note,100/127)
                 voice[i].nb_note = {player = player, note = nb_note}
               end
             --end
-          table.insert(voice[i].active_notes,pitch+(36+(voice[i].octave*12)+semi))
+          table.insert(voice[i].active_notes,pitch+(36+(octave*12)+semi))
           end
       end
 
@@ -797,6 +832,7 @@ function pulse()
     end
     ppqn_counter = ppqn_counter + 1
     iterate()
+    if transport_run then lfos.tick() end
   end
 end
 
@@ -1181,6 +1217,9 @@ function init()
 
   refrain.init()
   
+  lfos.add_params()
+  lfos.changed = function() grid_dirty = true end
+
   params:add_group("passersby", 31)
   passersby.add_params()
   wsyn_add_params()
@@ -1736,6 +1775,12 @@ g.key = function(x,y,z)
         voice[1].bit = math.random(0,8)
       elseif x == 5 then
         voice[2].bit = math.random(0,8)
+      elseif x == 6 then
+        lfos.toggle("bits")
+      elseif x == 9 then
+        lfos.toggle("range")
+      elseif x == 12 then
+        lfos.toggle("octs")
       elseif x == 7 or x == 8 or x == 10 or x == 11 then
         if x == 7 then
           new_low = math.random(params:get("lo_clamp_min"),params:get("lo_clamp_max"))
@@ -1802,6 +1847,10 @@ g.key = function(x,y,z)
     -- play/stop
     if y == 5 and x == 1 then
       if z == 1 then toggle_play() end
+
+    -- lfos for bits, low/high, octaves
+    elseif y == 5 and x >= 3 and x <= 5 then
+      if z == 1 then lfos.toggle(lfos.ids[x-2]) end
 
     -- buttons for changing cycle modes
     elseif y == 6 and x >= 1 and x <= 3 and preset_count > 0 then
@@ -1926,14 +1975,16 @@ function grid_redraw()
       end
     end
 
-    --leds for voices
-    g:led(9-voice[1].bit,1,4)
-    g:led(9-voice[2].bit,2,4)
-    if seed_as_binary[voice[1].bit] == 1 and display_voice[1] then
-      g:led(9-voice[1].bit,1,15)
-    end
-    if seed_as_binary[voice[2].bit] == 1 and display_voice[2] then
-      g:led(9-voice[2].bit,2,15)
+    --leds for voices: the bit that is set, and where its lfo has moved it
+    for i = 1,2 do
+      local bit = mod_bit(i)
+      g:led(9-voice[i].bit,i,4)
+      if bit ~= voice[i].bit then
+        g:led(9-bit,i,8)
+      end
+      if seed_as_binary[bit] == 1 and display_voice[i] then
+        g:led(9-bit,i,15)
+      end
     end
 
     --leds for randomization
@@ -1948,6 +1999,11 @@ function grid_redraw()
     g:led(13,3,4)
     g:led(14,3,4)
     g:led(16,3,4)
+
+    --leds for lfos
+    g:led(6,3,lfos.is_on("bits") and 15 or 1)
+    g:led(9,3,lfos.is_on("range") and 15 or 1)
+    g:led(12,3,lfos.is_on("octs") and 15 or 1)
 
     --light up all available preses
     for i=7,8 do
@@ -1983,9 +2039,11 @@ function grid_redraw()
     g:led(15,6,4) --clear all presets
     g:led(16,6,6) --add preset
 
-    --leds for octaves
-    g:led(voice[1].octave+13,1,15)
-    g:led(voice[2].octave+13,2,15)
+    --leds for octaves, and where their lfo has moved them
+    for i = 1,2 do
+      g:led(mod_octave(i)+13,i,8)
+      g:led(voice[i].octave+13,i,15)
+    end
 
     --light up low / high when select is momentary
     if momentary[1][6] then low_highlight = 15 else low_highlight = 6 end
@@ -2001,6 +2059,15 @@ function grid_redraw()
       g:led(new_high,4,high_highlight)
     elseif new_high > 16 then
       g:led(new_high-16,5,high_highlight)
+    end
+
+    --where the lfo has moved low / high
+    local low, high = mod_range()
+    if low ~= new_low then
+      g:led((low-1)%16+1, low > 16 and 5 or 4, 4)
+    end
+    if high ~= new_high then
+      g:led((high-1)%16+1, high > 16 and 5 or 4, 4)
     end
 
     --draw active note
@@ -2054,14 +2121,16 @@ function grid_redraw()
       end
     end
 
-    --leds for voices
-    g:led(9-voice[1].bit,1,4)
-    g:led(9-voice[2].bit,2,4)
-    if seed_as_binary[voice[1].bit] == 1 and display_voice[1] then
-      g:led(9-voice[1].bit,1,15)
-    end
-    if seed_as_binary[voice[2].bit] == 1 and display_voice[2] then
-      g:led(9-voice[2].bit,2,15)
+    --leds for voices: the bit that is set, and where its lfo has moved it
+    for i = 1,2 do
+      local bit = mod_bit(i)
+      g:led(9-voice[i].bit,i,4)
+      if bit ~= voice[i].bit then
+        g:led(9-bit,i,8)
+      end
+      if seed_as_binary[bit] == 1 and display_voice[i] then
+        g:led(9-bit,i,15)
+      end
     end
 
     --leds for randomization
@@ -2155,6 +2224,11 @@ function grid_redraw()
 
     --led for play/stop
     g:led(1, 5, play_led())
+
+    --leds for lfos
+    for i, id in ipairs(lfos.ids) do
+      g:led(i+2, 5, lfos.is_on(id) and 15 or 1)
+    end
 
     --leds for cycling modes
     if preset_count > 0 then
