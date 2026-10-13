@@ -25,6 +25,8 @@
 -- nb voices, if nb is installed
 -- chord progression: voices
 -- can snap to its chords
+-- lfos: bits, low/high, octaves,
+-- any parameter or a midi cc
 --
 -- plug in grid
 -- (1,1) to (8,2): bits
@@ -1225,6 +1227,10 @@ function init()
   passersby.add_params()
   wsyn_add_params()
   if nb then nb:add_player_params() end
+  lfos.add_param_lfos()
+  lfos.send_cc = function(cc, value, channel)
+    if m then m:cc(cc, value, channel) end
+  end
   params:bang()
   params:set("wsyn_init",1)
 
