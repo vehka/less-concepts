@@ -457,6 +457,16 @@ local function bang()
   next_seed = out1+out2+out3+out4+out5+out6+out7+out8
 end
 
+-- tuning: pitches go through musicutil.note_num_to_freq, which the z_tuning
+-- mod replaces. crow volts are worked out from it
+local function log2(x) return math.log(x) / math.log(2) end
+
+-- crow and the ii voices take 1V/oct, with 0V at note 48 in 12-TET
+local CROW_ZERO_HZ = 13.75 * 2 ^ ((48 - 9) / 12)
+local function note_to_volts(note)
+  return log2(MusicUtil.note_num_to_freq(note) / CROW_ZERO_HZ)
+end
+
 -- in olafur mode, don't send notes back to the device that plays the note pool
 local function midi_out_allowed()
   return params:string("scale") ~= "olafur"
@@ -611,25 +621,26 @@ local function iterate()
               if params:get("voice_"..i.."_engine") == 2 then
                 engine.noteOn(i,midi_to_hz(pitch+(48+(octave * 12)+semi)),100)
               end
+              local note = pitch+(36+(octave*12)+semi)
               if params:get("voice_"..i.."_midi_A") == 2 and midi_out_allowed() then
-                m:note_on(pitch+(36+(octave*12)+semi),100,params:get("midi_A"))
+                m:note_on(note,100,params:get("midi_A"))
               end
               if params:get("voice_"..i.."_midi_B") == 2 and midi_out_allowed() then
-                m:note_on(pitch+(36+(octave*12)+semi),100,params:get("midi_B"))
+                m:note_on(note,100,params:get("midi_B"))
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
-                crow.output[1].volts = ((pitch+(36+(octave*12)+semi)-48)/12)
+                crow.output[1].volts = note_to_volts(note)
                 crow.output[2]()
               end
               if params:get("voice_"..i.."_crow_2") == 2 then
-                crow.output[3].volts = ((pitch+(36+(octave*12)+semi)-48)/12)
+                crow.output[3].volts = note_to_volts(note)
                 crow.output[4]()
               end
               if params:get("voice_"..i.."_JF") == 2 then
-                crow.ii.jf.play_note((pitch+(36+(octave*12)+semi)-48)/12,5)
+                crow.ii.jf.play_note(note_to_volts(note),5)
               end
               if params:get("voice_"..i.."_w") == 2 then
-                crow.send("ii.wsyn.play_note(".. (pitch+(36+(octave*12)+semi)-48)/12 ..", " .. pset_wsyn_vel .. ")")
+                crow.send("ii.wsyn.play_note(".. note_to_volts(note) ..", " .. pset_wsyn_vel .. ")")
               end
               if nb then
                 -- same octave as the engine
@@ -665,8 +676,9 @@ function change(s)
 end
 
 -- convert midi note to hz for Passersby engine
+-- (through musicutil, so a tuning mod like z_tuning applies)
 function midi_to_hz(note)
-  return (440 / 32) * (2 ^ ((note - 9) / 12))
+  return MusicUtil.note_num_to_freq(note)
 end
 
 -- allow user to define the transposition of voice 1 and voice 2, simultaneous changes to MIDI and Passersby engine
