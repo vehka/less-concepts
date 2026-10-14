@@ -25,6 +25,8 @@
 -- nb voices, if nb is installed
 -- chord progression: voices
 -- can snap to its chords
+-- z_tuning mod: tunings, and a
+-- "z_tuning steps" scale
 -- lfos: bits, low/high, octaves,
 -- voice parameters or a midi cc
 --
@@ -102,6 +104,24 @@ for i = 1, #MusicUtil.SCALES do
 end
 table.insert(names,"olafur")
 active_olafur_notes = 0
+-- "z_tuning steps": every step of the z_tuning tuning, with an octave of the
+-- tuning's own number of steps. after olafur, so saved scales keep their index
+local STEPS_SCALE = nil
+if z_tuning then
+  table.insert(names, "z_tuning steps")
+  STEPS_SCALE = #names
+  notes[STEPS_SCALE] = {}
+  for s = 0,63 do notes[STEPS_SCALE][s+1] = s end
+end
+-- the steps in an octave: 12, or in z_tuning steps the tuning's own
+local period = 12
+local function update_period()
+  period = 12
+  if coll == STEPS_SCALE then
+    local tuning = z_tuning.get_tuning_data()[z_tuning.get_tuning_state().selected_tuning]
+    if tuning then period = #tuning.bend_table end
+  end
+end
 
 edit_foci = {
   "lc_bits",
@@ -299,7 +319,9 @@ end
 
 -- chord progression: a voice that follows it has its notes moved to the
 -- nearest tone of the current chord
-local ROMAN = {"I", "II", "III", "IV", "V", "VI", "VII"}
+-- degrees past VII are for the z_tuning steps of a tuning; scales with
+-- fewer degrees wrap around
+local ROMAN = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"}
 local MAX_CHORD_STEPS = 8
 local chord = {
   follow = {false, false},
@@ -329,30 +351,48 @@ local function current_chord_step()
   return 1
 end
 
+-- the steps of the selected scale in an octave, ending with the octave as
+-- in musicutil. in z_tuning steps every step of the tuning is a degree
+local function scale_intervals()
+  if coll == STEPS_SCALE then
+    local intervals = {}
+    for s = 0,period do intervals[s+1] = s end
+    return intervals
+  end
+  local scale_data = MusicUtil.SCALES[coll]
+  return scale_data and scale_data.intervals
+end
+
 -- chords are stacked thirds on a degree of the selected scale
 local function update_chord()
-  local scale_data = MusicUtil.SCALES[coll]
-  if scale_data == nil then
+  local intervals = scale_intervals()
+  if intervals == nil then
     chord.name = nil
     chord.key = nil
     return
   end
-  local intervals = scale_data.intervals
   local len = #intervals - 1 -- the last interval is the octave
   local degree = (chord.degree[current_chord_step()] - 1) % len + 1
-  local key = coll.."/"..degree.."/"..(chord.sevenths and 7 or 5)
+  local key = coll.."/"..period.."/"..degree.."/"..(chord.sevenths and 7 or 5)
   if key == chord.key then return end
   chord.key = key
 
   local pcs = {}
   chord.tones = {}
   for k = 0,(chord.sevenths and 3 or 2) do
-    pcs[k+1] = intervals[(degree - 1 + k*2) % len + 1] % 12
+    local d = degree - 1 + k*2
+    pcs[k+1] = intervals[d % len + 1] % period
     chord.tones[pcs[k+1]] = true
+  end
+  local name = ROMAN[degree] or tostring(degree)
+  if coll == STEPS_SCALE then
+    -- no chord qualities or note names for the steps of a tuning
+    if chord.sevenths then name = name.."7" end
+    chord.name = name
+    return
   end
   local third = (pcs[2] - pcs[1]) % 12
   local fifth = (pcs[3] - pcs[1]) % 12
-  local name = ROMAN[degree] or tostring(degree)
   if third == 3 then name = string.lower(name) end
   if fifth == 6 then name = name.."o" elseif fifth == 8 then name = name.."+" end
   if chord.sevenths then name = name.."7" end
@@ -361,9 +401,9 @@ local function update_chord()
 end
 
 local function snap_to_chord(note)
-  for d = 0,6 do
-    if chord.tones[(note - d) % 12] then return note - d end
-    if chord.tones[(note + d) % 12] then return note + d end
+  for d = 0,period // 2 do
+    if chord.tones[(note - d) % period] then return note - d end
+    if chord.tones[(note + d) % period] then return note + d end
   end
   return note
 end
@@ -505,7 +545,9 @@ end
 -- the scales start on C, but z_tuning builds its tuning from its own root
 -- note. "follow scale" moves that root to the C3 of the scale + global
 -- transpose, keeping the A4 reference the current root implies (like
--- z_tuning's "root note (adjusting)"), so the tuning lines up with the scale
+-- z_tuning's "root note (adjusting)"), so the tuning lines up with the scale.
+-- in z_tuning steps the root stays on C3: transposing moves along the steps
+-- of the tuning, like a change of mode
 local tuning_root_follows = false
 local function align_tuning_root()
   -- z_tuning adds its params after init(), and set_root_note needs them
@@ -514,7 +556,7 @@ local function align_tuning_root()
   end
   local state = z_tuning.get_tuning_state()
   local a4 = state.root_freq * 2 ^ ((69 - state.root_note) / 12)
-  local root = 48 + semi
+  local root = coll == STEPS_SCALE and 48 or 48 + semi
   if root == state.root_note then return end
   z_tuning.set_root_note(root)
   z_tuning.set_root_frequency(a4 * 2 ^ ((root - 69) / 12))
@@ -674,9 +716,10 @@ local function iterate()
             screennote = pitch
             gridnote = scaled
               if params:get("voice_"..i.."_engine") == 2 then
-                engine.noteOn(i,midi_to_hz(pitch+(48+(octave * 12)+semi)),100)
+                engine.noteOn(i,midi_to_hz(pitch+(48+(octave*period)+semi)),100)
               end
-              local note = pitch+(36+(octave*12)+semi)
+              -- midi and crow an octave below the engine
+              local note = pitch+(48-period+(octave*period)+semi)
               local midi_note, bend = midi_tuned_note(note)
               for _, x in ipairs({"A", "B"}) do
                 if params:get("voice_"..i.."_midi_"..x) == 2 and midi_out_allowed() then
@@ -700,7 +743,7 @@ local function iterate()
               end
               if nb then
                 -- same octave as the engine
-                local nb_note = pitch+(48+(octave*12)+semi)
+                local nb_note = pitch+(48+(octave*period)+semi)
                 local player = params:lookup_param("voice_"..i.."_nb"):get_player()
                 player:note_on(nb_note,100/127)
                 voice[i].nb_note = {player = player, note = nb_note}
@@ -939,6 +982,10 @@ end
 -- everything that happens when the script is first loaded
 function init()
   -- sets initial state
+  if z_tuning then
+    -- the steps in an octave of z_tuning steps change with the tuning
+    z_tuning.set_tuning_change_callback(update_period)
+  end
   crow.send("ii.wsyn.ar_mode(1)")
   voice[1].bit = 1
   voice[2].bit = 8
@@ -1226,6 +1273,7 @@ function init()
       force_notes_off()
     end
     coll = x
+    update_period()
     align_tuning_root()
   end)
   params:add_option("tuning_root", "z_tuning root", {"z_tuning", "follow scale"}, 1)
@@ -1677,10 +1725,13 @@ function redraw()
     screen.move(4, 32)
     screen.level(1)
     if screennote ~= nil then
-      screen.text(MusicUtil.note_num_to_name(screennote))
+      -- in z_tuning steps, the degree of the tuning instead of a note name
+      local label = coll == STEPS_SCALE and tostring(screennote % period + 1)
+        or MusicUtil.note_num_to_name(screennote)
+      screen.text(label)
       screen.move(5, 30)
       screen.level(8)
-      screen.text(MusicUtil.note_num_to_name(screennote))
+      screen.text(label)
     end
 
     --cycle mode and preset duration
