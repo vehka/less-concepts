@@ -30,6 +30,8 @@
 -- "z_tuning steps" scale
 -- lfos: bits, low/high, octaves,
 -- voice parameters or a midi cc
+-- note lengths for each voice,
+-- from weights
 --
 -- plug in grid
 -- (1,1) to (8,2): bits
