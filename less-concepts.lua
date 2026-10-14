@@ -328,12 +328,14 @@ end
 -- nearest tone of the current chord
 -- degrees past VII are for the z_tuning steps of a tuning; scales with
 -- fewer degrees wrap around
+local MAX_CHORD_DEGREE = 168 -- the steps of ji_gamut, the biggest tuning
 local ROMAN = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"}
 local MAX_CHORD_STEPS = 8
 local chord = {
   follow = {false, false},
   strength = 100,
   sevenths = false,
+  stride = 2, -- degrees between the tones of a chord
   steps = 4,
   degree = {},
   beats = {},
@@ -377,7 +379,9 @@ local function scale_intervals()
   return scale_data and scale_data.intervals
 end
 
--- chords are stacked thirds on a degree of the selected scale
+-- chords are stacked on a degree of the selected scale, a stride of degrees
+-- apart: 2 stacks thirds in a seven note scale. in the many steps of a big
+-- tuning a small stride makes clusters, a bigger one wider chords
 local function update_chord()
   local intervals = scale_intervals()
   if intervals == nil then
@@ -387,7 +391,7 @@ local function update_chord()
   end
   local len = #intervals - 1 -- the last interval is the octave
   local degree = (chord.degree[current_chord_step()] - 1) % len + 1
-  local key = coll.."/"..period.."/"..degree.."/"..(chord.sevenths and 7 or 5)
+  local key = coll.."/"..period.."/"..degree.."/"..chord.stride.."/"..(chord.sevenths and 7 or 5)
   if key == chord.key then return end
   chord.key = key
 
@@ -395,16 +399,18 @@ local function update_chord()
   chord.tones = {}
   chord.stack = {}
   for k = 0,(chord.sevenths and 3 or 2) do
-    local d = degree - 1 + k*2
+    local d = degree - 1 + k*chord.stride
     pcs[k+1] = intervals[d % len + 1] % period
     chord.tones[pcs[k+1]] = true
     chord.stack[k+1] = intervals[d % len + 1] + period * math.floor(d / len)
   end
   local name = ROMAN[degree] or tostring(degree)
-  if coll == STEPS_SCALE then
-    -- no chord qualities or note names for the steps of a tuning
+  if coll == STEPS_SCALE or chord.stride ~= 2 then
+    -- chord qualities only for stacked thirds, note names not for the steps
+    -- of a tuning
     if chord.sevenths then name = name.."7" end
-    chord.name = name
+    chord.name = coll == STEPS_SCALE and name
+      or name.." "..MusicUtil.note_num_to_name(pcs[1])
     return
   end
   local third = (pcs[2] - pcs[1]) % 12
@@ -435,7 +441,7 @@ end
 chord_voice.period = function() return period end
 
 local function chord_add_params()
-  params:add_group("chord progression", 5 + MAX_CHORD_STEPS*2 + chord_voice.param_count(nb))
+  params:add_group("chord progression", 6 + MAX_CHORD_STEPS*2 + chord_voice.param_count(nb))
   for i = 1,2 do
     params:add_option("chord_follow_"..i, "vox "..i.." follows chords", {"no", "yes"}, 1)
     params:set_action("chord_follow_"..i, function(x) chord.follow[i] = (x == 2) end)
@@ -444,6 +450,8 @@ local function chord_add_params()
   params:set_action("chord_strength", function(x) chord.strength = x end)
   params:add_option("chord_sevenths", "sevenths", {"no", "yes"}, 1)
   params:set_action("chord_sevenths", function(x) chord.sevenths = (x == 2) end)
+  params:add_number("chord_stride", "stride", 1, 64, 2)
+  params:set_action("chord_stride", function(x) chord.stride = x end)
   chord_voice.add_params(nb)
   params:add_number("chord_steps", "steps", 1, MAX_CHORD_STEPS, 4)
   params:set_action("chord_steps", function(x)
@@ -463,7 +471,9 @@ local function chord_add_params()
   for s = 1,MAX_CHORD_STEPS do
     chord.degree[s] = default_degrees[s] or 1
     chord.beats[s] = 4
-    params:add_option("chord_degree_"..s, s..": chord", ROMAN, chord.degree[s])
+    -- a number, as a big tuning has more degrees than fit in an option list
+    params:add_number("chord_degree_"..s, s..": chord", 1, MAX_CHORD_DEGREE, chord.degree[s],
+      function(p) return ROMAN[p:get()] or tostring(p:get()) end)
     params:set_action("chord_degree_"..s, function(x) chord.degree[s] = x end)
     params:add_number("chord_beats_"..s, s..": beats", 1, 64, 4)
     params:set_action("chord_beats_"..s, function(x) chord.beats[s] = x end)
