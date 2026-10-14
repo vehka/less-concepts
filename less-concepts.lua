@@ -59,6 +59,7 @@ passersby = include "passersby/lib/passersby_engine"
 refrain = include "lib/refrain"
 local lfos = include "lib/lfos"
 local chord_voice = include "lib/chord_voice"
+local note_lengths = include "lib/note_lengths"
 -- optional: https://github.com/sixolet/nb lets the voices play nb players.
 -- use the installed library, or else the copy that another script or mod bundles
 local function find_nb()
@@ -93,7 +94,6 @@ for i = 1,2 do
   voice[i] = {}
   voice[i].bit = 0
   voice[i].octave = 0
-  voice[i].active_notes = {}
   voice[i].ch = 1
 end
 local semi = 0
@@ -647,36 +647,50 @@ local function midi_out_allowed()
     or params:get("olafur_device") ~= params:get("midi_device")
 end
 
-local function nb_note_off(n)
-  local sounding = voice[n].nb_note
-  if sounding then
-    sounding.player:note_off(sounding.note)
-    voice[n].nb_note = nil
-  end
+-- a voice plays one note at a time. voice[n].sounding is what it sent:
+-- the midi notes with their channels, the nb note, and the tick it ends on
+local tick = 0
+
+local function end_note(s)
+  for _, x in ipairs(s.midi) do m:note_off(x.note, 0, x.ch) end
+  if s.nb then s.nb.player:note_off(s.nb.note) end
 end
 
 function notes_off(n)
-  nb_note_off(n)
-  for i=1,#voice[n].active_notes do
-    if params:get("voice_"..n.."_midi_A") == 2 and midi_out_allowed() then
-      m:note_off(voice[n].active_notes[i],0,params:get("midi_A"))
-    end
-    if params:get("voice_"..n.."_midi_B") == 2 and midi_out_allowed() then
-      m:note_off(voice[n].active_notes[i],0,params:get("midi_B"))
-    end
-    -- engine.noteOff(n)
-    voice[n].active_notes = {}
+  local s = voice[n].sounding
+  if s then
+    end_note(s)
+    voice[n].sounding = nil
   end
 end
 
 function force_notes_off()
+  for n = 1,2 do notes_off(n) end
+end
+
+-- before a new note of voice n is sent: cut the note that still plays.
+-- with legato it plays on, unless the new note has the same pitch: its note
+-- off would end the new note too
+local function end_before(n, midi_note, nb_note)
+  local old = voice[n].sounding
+  if not old then return end
+  local cut = not note_lengths.legato(n)
+  for _, x in ipairs(old.midi) do cut = cut or x.note == midi_note end
+  cut = cut or (old.nb ~= nil and old.nb.note == nb_note)
+  if cut then notes_off(n) end
+end
+
+-- after the new note was sent: a legato note that still plays ends now
+local function start_note(n, s)
+  local old = voice[n].sounding
+  voice[n].sounding = s
+  if old then end_note(old) end
+end
+
+local function end_due_notes()
   for n = 1,2 do
-    nb_note_off(n)
-    for i=1,#voice[n].active_notes do
-      m:note_off(voice[n].active_notes[i],0,params:get("midi_A"))
-      m:note_off(voice[n].active_notes[i],0,params:get("midi_B"))
-      voice[n].active_notes = {}
-    end
+    local s = voice[n].sounding
+    if s and tick >= s.off_tick then notes_off(n) end
   end
 end
 
@@ -765,7 +779,6 @@ local function iterate()
         end
       end
 
-      for i = 1,2 do notes_off(i) end
       if chord.follow[1] or chord.follow[2] then update_chord() end
       seed = next_seed
       bang()
@@ -792,19 +805,28 @@ local function iterate()
             end
             screennote = pitch
             gridnote = scaled
-            local midi_note
+            local step_ticks = ppqn / ppqn_divisions[sel_ppqn_div]
+            local length = note_lengths.pick(i, seed, mod_bit(i))
+            local sounding = {
+              midi = {},
+              off_tick = tick + math.max(1, util.round(step_ticks * length))
+            }
             in_tuning(voice_tuning[i], function()
-              if params:get("voice_"..i.."_engine") == 2 then
-                engine.noteOn(i,midi_to_hz(pitch+(48+(octave*period)+semi)),100)
-              end
-              -- midi and crow an octave below the engine
+              -- the engine and nb an octave above midi and crow
+              local engine_note = pitch+(48+(octave*period)+semi)
               local note = pitch+(48-period+(octave*period)+semi)
-              local bend
-              midi_note, bend = midi_tuned_note(note)
+              local midi_note, bend = midi_tuned_note(note)
+              end_before(i, midi_note, engine_note)
+              if params:get("voice_"..i.."_engine") == 2 then
+                engine.noteOn(i,midi_to_hz(engine_note),100)
+              end
               for _, x in ipairs({"A", "B"}) do
                 if params:get("voice_"..i.."_midi_"..x) == 2 and midi_out_allowed() then
-                  if bend then m:pitchbend(bend,params:get("midi_"..x)) end
-                  m:note_on(midi_note,100,params:get("midi_"..x))
+                  local ch = params:get("midi_"..x)
+                  if bend then m:pitchbend(bend,ch) end
+                  m:note_on(midi_note,100,ch)
+                  -- what was sent, so the note off matches a microtuned note
+                  table.insert(sounding.midi, {note = midi_note, ch = ch})
                 end
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
@@ -822,15 +844,12 @@ local function iterate()
                 crow.send("ii.wsyn.play_note(".. note_to_volts(note) ..", " .. pset_wsyn_vel .. ")")
               end
               if nb then
-                -- same octave as the engine
-                local nb_note = pitch+(48+(octave*period)+semi)
                 local player = params:lookup_param("voice_"..i.."_nb"):get_player()
-                player:note_on(nb_note,100/127)
-                voice[i].nb_note = {player = player, note = nb_note}
+                player:note_on(engine_note,100/127)
+                sounding.nb = {player = player, note = engine_note}
               end
             end)
-          -- what was sent, so the note off matches a microtuned note
-          table.insert(voice[i].active_notes,midi_note)
+            start_note(i, sounding)
           end
       end
 
@@ -1027,7 +1046,9 @@ function pulse()
       grid_dirty = true
     end
     ppqn_counter = ppqn_counter + 1
+    tick = tick + 1
     iterate()
+    end_due_notes()
     if transport_run then
       lfos.tick()
     else
@@ -1450,6 +1471,8 @@ function init()
   end)
   
   chord_add_params()
+
+  note_lengths.add_params()
 
   refrain.init()
   
