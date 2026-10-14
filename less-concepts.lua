@@ -68,6 +68,9 @@ end
 local nb_path = find_nb()
 local nb = nb_path and include(nb_path) or nil
 MusicUtil = require "musicutil"
+-- the z_tuning mod, if it's loaded: musicutil then plays its tuning
+local Mods = require 'core/mods'
+local z_tuning = Mods.is_loaded("z_tuning") and require("z_tuning/lib/mod") or nil
 
 seed = 0
 rule = 0
@@ -458,13 +461,45 @@ local function bang()
 end
 
 -- tuning: pitches go through musicutil.note_num_to_freq, which the z_tuning
--- mod replaces. crow volts are worked out from it
+-- mod replaces. crow volts and midi microtuning are worked out from it
 local function log2(x) return math.log(x) / math.log(2) end
 
 -- crow and the ii voices take 1V/oct, with 0V at note 48 in 12-TET
 local CROW_ZERO_HZ = 13.75 * 2 ^ ((48 - 9) / 12)
 local function note_to_volts(note)
   return log2(MusicUtil.note_num_to_freq(note) / CROW_ZERO_HZ)
+end
+
+-- midi microtuning: send the nearest 12-TET note and pitch bend the rest,
+-- for a synth tuned to A440. bend is per channel, so each voice needs its own
+local midi_microtune = false
+local midi_bend_range = 2
+local function midi_tuned_note(note)
+  if not midi_microtune then return note, nil end
+  local exact = 69 + 12 * log2(MusicUtil.note_num_to_freq(note) / 440)
+  local nearest = util.clamp(math.floor(exact + 0.5), 0, 127)
+  local bend = 8192 + (exact - nearest) / midi_bend_range * 8192
+  return nearest, util.clamp(math.floor(bend + 0.5), 0, 16383)
+end
+
+-- the midi channel both voices send to, if any
+local function midi_shared_channel()
+  local user = {}
+  for i = 1,2 do
+    for _, x in ipairs({"A", "B"}) do
+      if params:get("voice_"..i.."_midi_"..x) == 2 then
+        local ch = params:get("midi_"..x)
+        if user[ch] and user[ch] ~= i then return ch end
+        user[ch] = i
+      end
+    end
+  end
+end
+
+local function midi_center_bend()
+  if m == nil then return end
+  m:pitchbend(8192, params:get("midi_A"))
+  m:pitchbend(8192, params:get("midi_B"))
 end
 
 -- in olafur mode, don't send notes back to the device that plays the note pool
@@ -622,11 +657,12 @@ local function iterate()
                 engine.noteOn(i,midi_to_hz(pitch+(48+(octave * 12)+semi)),100)
               end
               local note = pitch+(36+(octave*12)+semi)
-              if params:get("voice_"..i.."_midi_A") == 2 and midi_out_allowed() then
-                m:note_on(note,100,params:get("midi_A"))
-              end
-              if params:get("voice_"..i.."_midi_B") == 2 and midi_out_allowed() then
-                m:note_on(note,100,params:get("midi_B"))
+              local midi_note, bend = midi_tuned_note(note)
+              for _, x in ipairs({"A", "B"}) do
+                if params:get("voice_"..i.."_midi_"..x) == 2 and midi_out_allowed() then
+                  if bend then m:pitchbend(bend,params:get("midi_"..x)) end
+                  m:note_on(midi_note,100,params:get("midi_"..x))
+                end
               end
               if params:get("voice_"..i.."_crow_1") == 2 then
                 crow.output[1].volts = note_to_volts(note)
@@ -650,7 +686,8 @@ local function iterate()
                 voice[i].nb_note = {player = player, note = nb_note}
               end
             --end
-          table.insert(voice[i].active_notes,pitch+(36+(octave*12)+semi))
+          -- what was sent, so the note off matches a microtuned note
+          table.insert(voice[i].active_notes,midi_note)
           end
       end
 
@@ -967,7 +1004,7 @@ function init()
   params:add{type = "trigger", id = "load", name = "load", action = historical_loadstate}
 
   -- each nb voice selector is two params
-  params:add_group("time, midi & outputs", nb and 38 or 34)
+  params:add_group("time, midi & outputs", nb and 40 or 36)
   params:add_separator("time (locked with presets)")
   params:add_option("time_div_opt", "time range", {"legacy 1/8 - 1/32", "slow 1/1 - 1/16", "full 2/1 - 1/32"}, 1)
   params:set_action("time_div_opt", function(x)
@@ -1081,6 +1118,23 @@ function init()
   end)
   params:add_number("midi_A", "midi ch A", 1,16,1)
   params:add_number("midi_B", "midi ch B", 1,16,1)
+  -- needs z_tuning: without it there's nothing to bend
+  params:add_option("midi_microtune", "microtune (pitchbend)", {"off", "on"}, 1)
+  params:set_action("midi_microtune", function(x)
+    local was_on = midi_microtune
+    midi_microtune = (x == 2) and z_tuning ~= nil
+    if was_on and not midi_microtune then midi_center_bend() end
+    local ch = midi_microtune and midi_shared_channel()
+    if ch then
+      print("less concepts: both voices send to midi ch "..ch..", their pitchbends will clash")
+    end
+  end)
+  params:add_number("midi_bend_range", "pitchbend range", 1, 48, 2)
+  params:set_action("midi_bend_range", function(x) midi_bend_range = x end)
+  if not z_tuning then
+    params:hide("midi_microtune")
+    params:hide("midi_bend_range")
+  end
   params:add_option("midi_transport", "start/stop with transport", {"off", "on"}, 2)
   params:add_option("midi_send_transport", "send start/stop", {"off", "on"}, 1)
   params:set_action("midi_transport", function (x) 
@@ -1265,6 +1319,7 @@ end
 
 function cleanup()
   if m then force_notes_off() end
+  if midi_microtune then midi_center_bend() end
   if nb then nb:stop_all() end
 end
 
