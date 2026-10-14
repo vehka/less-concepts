@@ -24,7 +24,8 @@
 -- save ALL to set
 -- nb voices, if nb is installed
 -- chord progression: voices
--- can snap to its chords
+-- can snap to its chords, and
+-- a chord voice can play it
 -- z_tuning mod: tunings, and a
 -- "z_tuning steps" scale
 -- lfos: bits, low/high, octaves,
@@ -57,6 +58,7 @@ passersby = include "passersby/lib/passersby_engine"
 
 refrain = include "lib/refrain"
 local lfos = include "lib/lfos"
+local chord_voice = include "lib/chord_voice"
 -- optional: https://github.com/sixolet/nb lets the voices play nb players.
 -- use the installed library, or else the copy that another script or mod bundles
 local function find_nb()
@@ -213,6 +215,9 @@ local options = {}
 local destructive = false
 local preset_key_is_held = false
 local transport_run = true
+-- ticks since the sequencer stopped: the chord progression goes on counting
+-- them, so the chord voice keeps playing it
+local stopped_ticks = 0
 
 local grid_dirty = false
 local screen_dirty = false
@@ -229,6 +234,8 @@ local function start()
   selected_preset = preset_count > 0 and 1 or 0
   ppqn_counter = math.huge -- the first step plays on the next tick
   lfos.reset()
+  stopped_ticks = 0
+  chord_voice.reset()
   transport_run = true
 end
 
@@ -331,19 +338,26 @@ local chord = {
   degree = {},
   beats = {},
   tones = {}, -- pitch classes of the current chord
+  stack = {}, -- its notes from the root up, for the chord voice
   key = nil, -- what tones and name were built from
   name = nil -- nil when there is no chord (olafur has no scale to build on)
 }
 
--- the step is derived from the beats played since the sequencer was started,
--- so it stays in place across tempo and time division changes, and the
--- progression starts over with the sequence
+-- the beats of the progression: those played since the sequencer was
+-- started, and then those since it stopped
+local function progression_beats()
+  return lfos.beats() + stopped_ticks / ppqn
+end
+
+-- the step is derived from the beats of the progression, so it stays in
+-- place across tempo and time division changes, and the progression starts
+-- over with the sequence
 local function current_chord_step()
   local total = 0
   for s = 1,chord.steps do
     total = total + chord.beats[s]
   end
-  local pos = lfos.beats() % total
+  local pos = progression_beats() % total
   for s = 1,chord.steps do
     pos = pos - chord.beats[s]
     if pos < 0 then return s end
@@ -379,10 +393,12 @@ local function update_chord()
 
   local pcs = {}
   chord.tones = {}
+  chord.stack = {}
   for k = 0,(chord.sevenths and 3 or 2) do
     local d = degree - 1 + k*2
     pcs[k+1] = intervals[d % len + 1] % period
     chord.tones[pcs[k+1]] = true
+    chord.stack[k+1] = intervals[d % len + 1] + period * math.floor(d / len)
   end
   local name = ROMAN[degree] or tostring(degree)
   if coll == STEPS_SCALE then
@@ -408,8 +424,18 @@ local function snap_to_chord(note)
   return note
 end
 
+-- the chord voice plays the chord from C3 + transpose, where the engine voices start
+chord_voice.notes = function()
+  update_chord()
+  if chord.name == nil then return nil end
+  local notes = {}
+  for k, step in ipairs(chord.stack) do notes[k] = 48 + semi + step end
+  return notes
+end
+chord_voice.period = function() return period end
+
 local function chord_add_params()
-  params:add_group("chord progression", 5 + MAX_CHORD_STEPS*2)
+  params:add_group("chord progression", 5 + MAX_CHORD_STEPS*2 + chord_voice.param_count(nb))
   for i = 1,2 do
     params:add_option("chord_follow_"..i, "vox "..i.." follows chords", {"no", "yes"}, 1)
     params:set_action("chord_follow_"..i, function(x) chord.follow[i] = (x == 2) end)
@@ -418,6 +444,7 @@ local function chord_add_params()
   params:set_action("chord_strength", function(x) chord.strength = x end)
   params:add_option("chord_sevenths", "sevenths", {"no", "yes"}, 1)
   params:set_action("chord_sevenths", function(x) chord.sevenths = (x == 2) end)
+  chord_voice.add_params(nb)
   params:add_number("chord_steps", "steps", 1, MAX_CHORD_STEPS, 4)
   params:set_action("chord_steps", function(x)
     chord.steps = x
@@ -948,7 +975,12 @@ function pulse()
     end
     ppqn_counter = ppqn_counter + 1
     iterate()
-    if transport_run then lfos.tick() end
+    if transport_run then
+      lfos.tick()
+    else
+      stopped_ticks = stopped_ticks + 1
+    end
+    chord_voice.tick(progression_beats())
   end
 end
 
@@ -1679,7 +1711,7 @@ function redraw()
     screen.move(48,32)
     screen.level(edit == "clock" and 15 or 2)
     screen.text("time: "..ppqn_string)
-    if chord.name and (chord.follow[1] or chord.follow[2]) then
+    if chord.name and (chord.follow[1] or chord.follow[2] or chord_voice.is_on()) then
       screen.level(8)
       screen.move(127,32)
       screen.text_right(chord.name)
