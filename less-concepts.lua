@@ -381,7 +381,19 @@ end
 
 -- chords are stacked on a degree of the selected scale, a stride of degrees
 -- apart: 2 stacks thirds in a seven note scale. in the many steps of a big
--- tuning a small stride makes clusters, a bigger one wider chords
+-- tuning a small stride makes clusters, a bigger one wider chords.
+-- returns the pitch classes of the chord and its notes from the root up
+local function build_chord(intervals, degree)
+  local len = #intervals - 1 -- the last interval is the octave
+  local pcs, stack = {}, {}
+  for k = 0,(chord.sevenths and 3 or 2) do
+    local d = degree - 1 + k*chord.stride
+    pcs[k+1] = intervals[d % len + 1] % period
+    stack[k+1] = intervals[d % len + 1] + period * math.floor(d / len)
+  end
+  return pcs, stack
+end
+
 local function update_chord()
   local intervals = scale_intervals()
   if intervals == nil then
@@ -395,15 +407,10 @@ local function update_chord()
   if key == chord.key then return end
   chord.key = key
 
-  local pcs = {}
+  local pcs
+  pcs, chord.stack = build_chord(intervals, degree)
   chord.tones = {}
-  chord.stack = {}
-  for k = 0,(chord.sevenths and 3 or 2) do
-    local d = degree - 1 + k*chord.stride
-    pcs[k+1] = intervals[d % len + 1] % period
-    chord.tones[pcs[k+1]] = true
-    chord.stack[k+1] = intervals[d % len + 1] + period * math.floor(d / len)
-  end
+  for _, pc in ipairs(pcs) do chord.tones[pc] = true end
   local name = ROMAN[degree] or tostring(degree)
   if coll == STEPS_SCALE or chord.stride ~= 2 then
     -- chord qualities only for stacked thirds, note names not for the steps
@@ -438,10 +445,22 @@ chord_voice.notes = function()
   for k, step in ipairs(chord.stack) do notes[k] = 48 + semi + step end
   return notes
 end
+-- the chord on a degree, for a one-shot: the shape of the progression's
+-- chords (sevenths, stride) on any degree of the scale
+chord_voice.chord_notes = function(degree)
+  local intervals = scale_intervals()
+  if intervals == nil then return nil end
+  local _, stack = build_chord(intervals, (degree - 1) % (#intervals - 1) + 1)
+  local notes = {}
+  for k, step in ipairs(stack) do notes[k] = 48 + semi + step end
+  return notes
+end
 chord_voice.period = function() return period end
 
+local function chord_degree_name(d) return ROMAN[d] or tostring(d) end
+
 local function chord_add_params()
-  params:add_group("chord progression", 6 + MAX_CHORD_STEPS*2 + chord_voice.param_count(nb))
+  params:add_group("chord progression", 6 + MAX_CHORD_STEPS*2)
   for i = 1,2 do
     params:add_option("chord_follow_"..i, "vox "..i.." follows chords", {"no", "yes"}, 1)
     params:set_action("chord_follow_"..i, function(x) chord.follow[i] = (x == 2) end)
@@ -452,7 +471,6 @@ local function chord_add_params()
   params:set_action("chord_sevenths", function(x) chord.sevenths = (x == 2) end)
   params:add_number("chord_stride", "stride", 1, 64, 2)
   params:set_action("chord_stride", function(x) chord.stride = x end)
-  chord_voice.add_params(nb)
   params:add_number("chord_steps", "steps", 1, MAX_CHORD_STEPS, 4)
   params:set_action("chord_steps", function(x)
     chord.steps = x
@@ -473,11 +491,17 @@ local function chord_add_params()
     chord.beats[s] = 4
     -- a number, as a big tuning has more degrees than fit in an option list
     params:add_number("chord_degree_"..s, s..": chord", 1, MAX_CHORD_DEGREE, chord.degree[s],
-      function(p) return ROMAN[p:get()] or tostring(p:get()) end)
+      function(p) return chord_degree_name(p:get()) end)
     params:set_action("chord_degree_"..s, function(x) chord.degree[s] = x end)
     params:add_number("chord_beats_"..s, s..": beats", 1, 64, 4)
     params:set_action("chord_beats_"..s, function(x) chord.beats[s] = x end)
   end
+  chord_voice.add_params{
+    nb = nb,
+    tuning = z_tuning ~= nil,
+    max_degree = MAX_CHORD_DEGREE,
+    degree_name = chord_degree_name
+  }
 end
 
 -- pack the seeds into clusters, compare these against neighborhoods to determine gates in iterate()
@@ -587,6 +611,7 @@ local function in_tuning(tuning, f)
   MusicUtil.note_num_to_freq = tuned
   if not ok then error(err, 0) end
 end
+chord_voice.in_tuning = in_tuning
 
 local function midi_center_bend()
   if m == nil then return end
@@ -1464,6 +1489,7 @@ end
 function cleanup()
   if m then force_notes_off() end
   if midi_microtune then midi_center_bend() end
+  chord_voice.cleanup()
   if nb then nb:stop_all() end
 end
 
