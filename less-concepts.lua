@@ -502,6 +502,26 @@ local function midi_center_bend()
   m:pitchbend(8192, params:get("midi_B"))
 end
 
+-- the scales start on C, but z_tuning builds its tuning from its own root
+-- note. "follow scale" moves that root to the C3 of the scale + global
+-- transpose, keeping the A4 reference the current root implies (like
+-- z_tuning's "root note (adjusting)"), so the tuning lines up with the scale
+local tuning_root_follows = false
+local function align_tuning_root()
+  -- z_tuning adds its params after init(), and set_root_note needs them
+  if not (z_tuning and tuning_root_follows and params.lookup["zt_root_note"]) then
+    return
+  end
+  local state = z_tuning.get_tuning_state()
+  local a4 = state.root_freq * 2 ^ ((69 - state.root_note) / 12)
+  local root = 48 + semi
+  if root == state.root_note then return end
+  z_tuning.set_root_note(root)
+  z_tuning.set_root_frequency(a4 * 2 ^ ((root - 69) / 12))
+  -- set_root_note updates the other root note params but not its own
+  params:set("zt_root_note", root, true)
+end
+
 -- in olafur mode, don't send notes back to the device that plays the note pool
 local function midi_out_allowed()
   return params:string("scale") ~= "olafur"
@@ -721,6 +741,7 @@ end
 -- allow user to define the transposition of voice 1 and voice 2, simultaneous changes to MIDI and Passersby engine
 local function transpose(semitone)
   semi = semitone
+  align_tuning_root()
 end
 
 function wsyn_add_params()
@@ -1194,7 +1215,7 @@ function init()
   params:add_option("voice_2_w", "vox 2 -> w/syn", {"no", "yes"}, 1)
   if nb then nb:add_param("voice_2_nb", "vox 2 -> nb") end
 
-  params:add_group("scaling & randomization",19)
+  params:add_group("scaling & randomization",20)
   params:add_option("scale", "scale", names, 1)
   params:set_action("scale", function(x)
     if params:string("scale") == "olafur" then
@@ -1205,7 +1226,14 @@ function init()
       force_notes_off()
     end
     coll = x
+    align_tuning_root()
   end)
+  params:add_option("tuning_root", "z_tuning root", {"z_tuning", "follow scale"}, 1)
+  params:set_action("tuning_root", function(x)
+    tuning_root_follows = (x == 2)
+    align_tuning_root()
+  end)
+  if not z_tuning then params:hide("tuning_root") end
   params:add_number("global transpose", "global transpose", -24,24,0)
   params:set_action("global transpose", function (x) transpose(x) end)
   for i = 1,2 do
@@ -1312,6 +1340,8 @@ function init()
 
   grid_dirty = true
   clock.run(redraw_clock)
+  -- z_tuning adds and bangs its params once init() returns
+  if z_tuning then clock.run(function() clock.sleep(0.1); align_tuning_root() end) end
 
   all_loaded = true
 
