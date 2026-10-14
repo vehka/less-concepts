@@ -573,6 +573,21 @@ local function midi_shared_channel()
   end
 end
 
+-- a voice can leave the tuning and play 12-TET: musicutil gives the standard
+-- pitches while it plays. engine, midi and crow follow, and nb players that
+-- convert their notes through musicutil as the note starts
+local TWELVE_TET = 2
+local voice_tuning = {1, 1}
+local function twelve_tet_freq(note) return 440 * 2 ^ ((note - 69) / 12) end
+local function in_tuning(tuning, f)
+  if not (z_tuning and tuning == TWELVE_TET) then return f() end
+  local tuned = MusicUtil.note_num_to_freq
+  MusicUtil.note_num_to_freq = twelve_tet_freq
+  local ok, err = pcall(f)
+  MusicUtil.note_num_to_freq = tuned
+  if not ok then error(err, 0) end
+end
+
 local function midi_center_bend()
   if m == nil then return end
   m:pitchbend(8192, params:get("midi_A"))
@@ -752,12 +767,15 @@ local function iterate()
             end
             screennote = pitch
             gridnote = scaled
+            local midi_note
+            in_tuning(voice_tuning[i], function()
               if params:get("voice_"..i.."_engine") == 2 then
                 engine.noteOn(i,midi_to_hz(pitch+(48+(octave*period)+semi)),100)
               end
               -- midi and crow an octave below the engine
               local note = pitch+(48-period+(octave*period)+semi)
-              local midi_note, bend = midi_tuned_note(note)
+              local bend
+              midi_note, bend = midi_tuned_note(note)
               for _, x in ipairs({"A", "B"}) do
                 if params:get("voice_"..i.."_midi_"..x) == 2 and midi_out_allowed() then
                   if bend then m:pitchbend(bend,params:get("midi_"..x)) end
@@ -785,7 +803,7 @@ local function iterate()
                 player:note_on(nb_note,100/127)
                 voice[i].nb_note = {player = player, note = nb_note}
               end
-            --end
+            end)
           -- what was sent, so the note off matches a microtuned note
           table.insert(voice[i].active_notes,midi_note)
           end
@@ -1114,7 +1132,7 @@ function init()
   params:add{type = "trigger", id = "load", name = "load", action = historical_loadstate}
 
   -- each nb voice selector is two params
-  params:add_group("time, midi & outputs", nb and 40 or 36)
+  params:add_group("time, midi & outputs", nb and 42 or 38)
   params:add_separator("time (locked with presets)")
   params:add_option("time_div_opt", "time range", {"legacy 1/8 - 1/32", "slow 1/1 - 1/16", "full 2/1 - 1/32"}, 1)
   params:set_action("time_div_opt", function(x)
@@ -1279,6 +1297,9 @@ function init()
   end)
   params:add_option("voice_1_w", "vox 1 -> w/syn", {"no", "yes"}, 1)
   if nb then nb:add_param("voice_1_nb", "vox 1 -> nb") end
+  params:add_option("voice_1_tuning", "vox 1 tuning", {"z_tuning", "12-TET"}, 1)
+  params:set_action("voice_1_tuning", function(x) voice_tuning[1] = x end)
+  if not z_tuning then params:hide("voice_1_tuning") end
   params:add_separator("voice 2 outputs")
   params:add_option("voice_2_engine", "vox 2 -> engine", {"no", "yes"}, 2)
   params:add_option("voice_2_midi_A", "vox 2 -> midi ch A", {"no", "yes"}, 1)
@@ -1303,6 +1324,9 @@ function init()
   end)
   params:add_option("voice_2_w", "vox 2 -> w/syn", {"no", "yes"}, 1)
   if nb then nb:add_param("voice_2_nb", "vox 2 -> nb") end
+  params:add_option("voice_2_tuning", "vox 2 tuning", {"z_tuning", "12-TET"}, 1)
+  params:set_action("voice_2_tuning", function(x) voice_tuning[2] = x end)
+  if not z_tuning then params:hide("voice_2_tuning") end
 
   params:add_group("scaling & randomization",20)
   params:add_option("scale", "scale", names, 1)
