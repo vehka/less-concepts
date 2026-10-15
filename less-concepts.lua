@@ -459,7 +459,16 @@ chord_voice.chord_notes = function(degree)
 end
 chord_voice.period = function() return period end
 
-local function chord_degree_name(d) return ROMAN[d] or tostring(d) end
+-- a degree past the end of the scale wraps around, so it shows the degree
+-- that plays too: VII=I in a six note scale
+local function chord_degree_name(d)
+  local name = ROMAN[d] or tostring(d)
+  local intervals = scale_intervals()
+  if intervals == nil then return name end
+  local wrapped = (d - 1) % (#intervals - 1) + 1
+  if wrapped == d then return name end
+  return name.."="..(ROMAN[wrapped] or tostring(wrapped))
+end
 
 local function chord_add_params()
   params:add_group("chord progression", 6 + MAX_CHORD_STEPS*2)
