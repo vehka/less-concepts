@@ -46,6 +46,12 @@
 -- (15,6): clear selected (hold)
 -- (14,6): clear all snapshots (hold)
 -- (9,7) to (16,8): snapshots
+-- (7,8), (8,8): morph 1 and 2:
+-- press to arm (it blinks), then
+-- press a snapshot to move to it
+-- over the morph's length. the
+-- snapshot blinks, faster as it
+-- nears the end
 -- (1,8): play/stop
 -- (2,8) to (4,8): time +/-
 --
@@ -62,6 +68,7 @@ refrain = include "lib/refrain"
 local lfos = include "lib/lfos"
 local chord_voice = include "lib/chord_voice"
 local note_lengths = include "lib/note_lengths"
+local morph = include "lib/morph"
 -- optional: https://github.com/sixolet/nb lets the voices play nb players.
 -- use the installed library, or else the copy that another script or mod bundles
 local function find_nb()
@@ -223,6 +230,19 @@ local stopped_ticks = 0
 
 local grid_dirty = false
 local screen_dirty = false
+
+-- the morph that is armed, 1 or 2: the next snapshot pressed starts it.
+-- the phases of the blinks of the armed morph button and of the snapshot
+-- a morph moves to
+local morph_armed = nil
+local morph_arm_blink = 0
+local morph_blink = 0
+local MORPH_ARM_BLINK_RATE = 3
+local morph_to -- defined with the snapshots, called from the grid
+-- blinks a second at the start of a morph, 8 a second at its end
+local function morph_blink_rate()
+  return 1 + 7 * morph.progress()
+end
 
 function r()
   norns.script.load(norns.state.script)
@@ -1062,6 +1082,7 @@ function pulse()
     end_due_notes()
     if transport_run then
       lfos.tick()
+      if morph.tick() then bang() end
     else
       stopped_ticks = stopped_ticks + 1
     end
@@ -1484,6 +1505,8 @@ function init()
   chord_add_params()
 
   note_lengths.add_params()
+
+  morph.add_params()
 
   refrain.init()
   
@@ -2094,20 +2117,30 @@ g.key = function(x,y,z)
         randomize_all()
       end
       bang()
+
+    --morph buttons: arm a morph, or disarm it
+    elseif y == 8 and (x == 7 or x == 8) then
+      if z == 1 then
+        morph_armed = morph_armed ~= x - 6 and x - 6 or nil
+        morph_arm_blink = 0
+      end
+
       --keys for selecting presets
     elseif (y == 8 or y == 7) and z == 1 then
       if x > 8 and x < 17 then
-        if y == 7 and x - 8 < preset_count+1 then
-          selected_preset = x - 8
-          new_preset_unpack(x - 8)
-        end
-        if y == 8 and x < preset_count+1 then
-          selected_preset = x
-          new_preset_unpack(x)
+        local set = y == 7 and x - 8 or x
+        if set <= preset_count then
+          selected_preset = set
+          if morph_armed then
+            morph_to(set, morph_armed)
+            morph_armed = nil
+            morph_blink = 0
+          else
+            new_preset_unpack(set)
+          end
         end
         if cycle_sel ~= "-" then
           preset_key_is_held = true
-          new_preset_unpack(x - 8)
         end
       end
 
@@ -2229,6 +2262,7 @@ function remove_wait(x)
   if x == 15 then
     preset_remove(selected_preset)
   elseif x == 14 then
+    morph.cancel()
     preset_count = 0
     cycle_sel = "-"
     selected_preset = 1
@@ -2241,6 +2275,14 @@ function redraw_clock()
     clock.sleep(1/30)
     if screen_dirty or screen_focus % 2 == 0 then
       redraw()
+    end
+    if morph.active() then
+      morph_blink = (morph_blink + morph_blink_rate() / 30) % 1
+      grid_dirty = true
+    end
+    if morph_armed then
+      morph_arm_blink = (morph_arm_blink + MORPH_ARM_BLINK_RATE / 30) % 1
+      grid_dirty = true
     end
     if grid_dirty then
       grid_redraw()
@@ -2320,6 +2362,24 @@ function grid_redraw()
       else
         g:led(selected_preset,8,15)
       end
+    end
+
+    --a morph blinks the snapshot it moves to
+    local morph_set = morph.slot()
+    if morph_set then
+      local level = morph_blink < 0.5 and 15 or 2
+      if morph_set <= 8 then
+        g:led(morph_set+8,7,level)
+      else
+        g:led(morph_set,8,level)
+      end
+    end
+
+    --morph buttons, the armed one blinks
+    for i = 1,2 do
+      local level = 4
+      if morph_armed == i then level = morph_arm_blink < 0.5 and 15 or 0 end
+      g:led(6+i,8,level)
     end
 
     g:led(14,6,2) --clear selected preset
@@ -2630,33 +2690,78 @@ function new_preset_pack(set)
   selected_preset = set
 end
 
-function new_preset_unpack(set)
-  if type(new_preset_pool[set].seed) ~= "table" then
-    new_seed = new_preset_pool[set].seed
+-- olafur keeps its own low/high unless they are saved with the snapshots
+local function snapshot_has_range()
+  return (params:string("scale") ~= "olafur") or (params:string("scale") == "olafur" and params:string("olafur_snapshot") == "on")
+end
+
+local function apply_snapshot(snapshot)
+  if type(snapshot.seed) ~= "table" then
+    new_seed = snapshot.seed
     seed = new_seed
-    new_rule = new_preset_pool[set].rule
+    new_rule = snapshot.rule
     rule = new_rule
-    voice[1].bit = new_preset_pool[set].v1_bit
-    voice[2].bit = new_preset_pool[set].v2_bit
-    if (params:string("scale") ~= "olafur") or (params:string("scale") == "olafur" and params:string("olafur_snapshot") == "on") then
-      new_low = new_preset_pool[set].new_low
-      new_high = new_preset_pool[set].new_high
+    voice[1].bit = snapshot.v1_bit
+    voice[2].bit = snapshot.v2_bit
+    if snapshot_has_range() then
+      new_low = snapshot.new_low
+      new_high = snapshot.new_high
     end
-    voice[1].octave = new_preset_pool[set].v1_octave
-    voice[2].octave = new_preset_pool[set].v2_octave
-    sel_ppqn_div = new_preset_pool[set].sel_ppqn_div
-    p_duration = new_preset_pool[set].p_duration
+    voice[1].octave = snapshot.v1_octave
+    voice[2].octave = snapshot.v2_octave
+    sel_ppqn_div = snapshot.sel_ppqn_div
+    p_duration = snapshot.p_duration
     p_duration_counter = 1
     if params:string("olafur_snapshot") == "on" then
-      notes[coll] = deep_copy(new_preset_pool[set].olafur_notes)
+      notes[coll] = deep_copy(snapshot.olafur_notes)
     end
     bang()
     grid_dirty = true
   end
 end
 
+-- a snapshot recalled at once stops a morph
+function new_preset_unpack(set)
+  morph.cancel()
+  apply_snapshot(new_preset_pool[set])
+end
+
+-- move to a snapshot with morph i, from where the sequencer is. the
+-- morph keeps its own copy, as a destructive cycle writes to the snapshot
+morph_to = function(set, i)
+  local snapshot = new_preset_pool[set]
+  if type(snapshot.seed) == "table" then return end
+  local from = {
+    rule = rule,
+    v1_bit = voice[1].bit, v2_bit = voice[2].bit,
+    v1_octave = voice[1].octave, v2_octave = voice[2].octave,
+  }
+  if snapshot_has_range() then
+    from.new_low, from.new_high = new_low, new_high
+  end
+  morph.start(set, from, deep_copy(snapshot), i)
+end
+
+morph.apply = function(field, value)
+  if field == "rule" then
+    rule = value
+    new_rule = value
+  elseif field == "v1_bit" then voice[1].bit = value
+  elseif field == "v2_bit" then voice[2].bit = value
+  elseif field == "v1_octave" then voice[1].octave = value
+  elseif field == "v2_octave" then voice[2].octave = value
+  elseif field == "new_low" then new_low = value
+  elseif field == "new_high" then new_high = value
+  end
+end
+morph.finish = function(set, snapshot)
+  selected_preset = set
+  apply_snapshot(snapshot)
+end
+
 function preset_remove(set)
   if set > 0 then
+    morph.cancel()
     for i = set,16 do
       new_preset_pool[i].seed = new_preset_pool[i+1].seed
       new_preset_pool[i].rule = new_preset_pool[i+1].rule

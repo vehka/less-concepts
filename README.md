@@ -35,6 +35,12 @@ four more lfos, in *param lfos*, each move a parameter or send a midi cc. a targ
 
 the cycles are counted in beats since play, so the lfos start over with the sequence and stand still while it is stopped.
 
+## morph
+
+a snapshot can be reached slowly, instead of at once: press one of the morph buttons at (7,8) and (8,8) on the grid, and it blinks, armed. then press a snapshot to start the morph. pressing the armed button again disarms it, and the other button arms its morph instead. the bits, low/high and octaves step from where they are to the snapshot's, spread evenly over the morph. the rule changes a bit at a time, in a random order, so the pattern drifts from one rule to the other. at the end the seed starts over from the snapshot's, and its time division and cycle length come in, as when the snapshot is pressed on its own.
+
+the two morphs have their own length, from 1/4 bar to 32 bars, in the *morph* group. the snapshot blinks while the morph moves to it, faster as it nears the end. a morph counts the beats played, so it stands still while the sequencer is stopped. pressing a snapshot on its own stops a morph, and a new morph starts from where the old one got to. the lfos go on moving the values around the morph. morphs are on 128 grids only.
+
 ## z_tuning
 
 with the [z_tuning](https://github.com/catfact/z_tuning) mod on, the voices play in its tuning: passersby, crow, just friends, w/syn and nb.
