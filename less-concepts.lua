@@ -51,7 +51,9 @@
 -- press a snapshot to move to it
 -- over the morph's length. the
 -- snapshot blinks, faster as it
--- nears the end
+-- nears the end. hold one and
+-- press the other to morph to the
+-- end of the chord progression
 -- (1,7) to (8,7): the chords of
 -- the progression, the one that
 -- plays bright, blinking 4 times
@@ -235,10 +237,12 @@ local stopped_ticks = 0
 local grid_dirty = false
 local screen_dirty = false
 
--- the morph that is armed, 1 or 2: the next snapshot pressed starts it.
+-- the morph that is armed, 1 or 2, or "prog" for one to the end of the
+-- chord progression: the next snapshot pressed starts it.
 -- the phases of the blinks of the armed morph button and of the snapshot
 -- a morph moves to
 local morph_armed = nil
+local morph_held = {false, false}
 local morph_arm_blink = 0
 local morph_blink = 0
 local MORPH_ARM_BLINK_RATE = 3
@@ -2181,10 +2185,19 @@ g.key = function(x,y,z)
       end
       bang()
 
-    --morph buttons: arm a morph, or disarm it
+    --morph buttons: arm a morph, or disarm it. hold one and press the
+    --other to arm a morph to the end of the chord progression
     elseif y == 8 and (x == 7 or x == 8) then
+      local i = x - 6
+      morph_held[i] = z == 1
       if z == 1 then
-        morph_armed = morph_armed ~= x - 6 and x - 6 or nil
+        if morph_held[3 - i] then
+          morph_armed = "prog"
+        elseif morph_armed == "prog" then
+          morph_armed = nil
+        else
+          morph_armed = morph_armed ~= i and i or nil
+        end
         morph_arm_blink = 0
       end
 
@@ -2449,10 +2462,13 @@ function grid_redraw()
       end
     end
 
-    --morph buttons, the armed one blinks
+    --morph buttons, the armed one blinks, both for a morph to the end of
+    --the chord progression
     for i = 1,2 do
       local level = 4
-      if morph_armed == i then level = morph_arm_blink < 0.5 and 15 or 0 end
+      if morph_armed == i or morph_armed == "prog" then
+        level = morph_arm_blink < 0.5 and 15 or 0
+      end
       g:led(6+i,8,level)
     end
 
@@ -2838,6 +2854,26 @@ end
 morph.finish = function(set, snapshot)
   selected_preset = set
   apply_snapshot(snapshot)
+end
+-- the beats to the end of the chord or the progression. with less than a
+-- quarter of it left, to the end of the next one, so the morph doesn't jump
+morph.beats_to = function(where)
+  local step, pos = chord_position()
+  if where == "chord" then
+    local left = chord.beats[step] - pos
+    if left < chord.beats[step] / 4 then
+      left = left + chord.beats[step % chord.steps + 1]
+    end
+    return left
+  end
+  local total, played = 0, pos
+  for s = 1,chord.steps do
+    total = total + chord.beats[s]
+    if s < step then played = played + chord.beats[s] end
+  end
+  local left = total - played
+  if left < total / 4 then left = left + total end
+  return left
 end
 
 function preset_remove(set)

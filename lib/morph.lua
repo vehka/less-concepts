@@ -15,10 +15,12 @@ local morph = {}
 
 local PPQN = 96
 
--- morph lengths, in beats
+-- morph lengths, in beats, or to where the chord progression is going: the
+-- end of the chord that plays, or of the progression
 local lengths = {
   { "1/4 bar", 1 }, { "1/2 bar", 2 }, { "1 bar", 4 }, { "2 bars", 8 },
   { "4 bars", 16 }, { "8 bars", 32 }, { "16 bars", 64 }, { "32 bars", 128 },
+  { "to chord end", "chord" }, { "to prog end", "prog" },
 }
 local DEFAULT_LENGTHS = { 3, 5 } -- 1 bar, 4 bars
 
@@ -36,6 +38,9 @@ local ticks, total_ticks = 0, 1
 function morph.apply(field, value) end
 -- redefine in user script: the morph has arrived, recall the snapshot
 function morph.finish(slot, snapshot) end
+-- redefine in user script: the beats to the end of the chord ("chord") or
+-- of the chord progression ("prog")
+function morph.beats_to(where) return 4 end
 
 -- the steps of a field, from one value to another, evenly spaced: one step
 -- lands in the middle, the last just before the end
@@ -65,8 +70,18 @@ local function add_rule_flips(from, to)
   end
 end
 
+--- the length of a morph in beats: of morph 1 or 2 from its param, or "prog"
+--- to the end of the chord progression. it is counted when the morph starts,
+--- so a progression changed while it runs no longer lines up with it
+function morph.length(i)
+  local length = i == "prog" and "prog" or lengths[params:get("morph_length_" .. i)][2]
+  if type(length) == "number" then return length end
+  return morph.beats_to(length)
+end
+
 --- start a morph to a snapshot, from the values in from. a field missing
---- from either is left as it is. i is the morph, 1 or 2, for its length
+--- from either is left as it is. i is the morph, 1 or 2, or "prog", for its
+--- length
 function morph.start(to_slot, from, to, i)
   events = {}
   for _, field in ipairs(STEPPED) do
@@ -76,7 +91,7 @@ function morph.start(to_slot, from, to, i)
   table.sort(events, function(a, b) return a.at < b.at end)
   next_event = 1
   ticks = 0
-  total_ticks = lengths[params:get("morph_length_" .. i)][2] * PPQN
+  total_ticks = math.max(1, math.floor(morph.length(i) * PPQN + 0.5))
   slot = to_slot
   target = to
   active = true
