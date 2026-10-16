@@ -52,6 +52,10 @@
 -- over the morph's length. the
 -- snapshot blinks, faster as it
 -- nears the end
+-- (1,7) to (8,7): the chords of
+-- the progression, the one that
+-- plays bright, blinking 4 times
+-- before the next
 -- (1,8): play/stop
 -- (2,8) to (4,8): time +/-
 --
@@ -375,17 +379,72 @@ end
 -- the step is derived from the beats of the progression, so it stays in
 -- place across tempo and time division changes, and the progression starts
 -- over with the sequence
-local function current_chord_step()
+-- returns the step and the beats played of it
+local function chord_position()
   local total = 0
   for s = 1,chord.steps do
     total = total + chord.beats[s]
   end
   local pos = progression_beats() % total
   for s = 1,chord.steps do
+    if pos < chord.beats[s] then return s, pos end
     pos = pos - chord.beats[s]
-    if pos < 0 then return s end
   end
-  return 1
+  return 1, 0
+end
+
+local function current_chord_step()
+  return (chord_position())
+end
+
+-- the chord is on screen and grid while a voice follows it or the chord
+-- voice plays it
+local function chord_shown()
+  return chord.name ~= nil and (chord.follow[1] or chord.follow[2] or chord_voice.is_on())
+end
+
+-- the progression is heard while the sequencer plays, or the chord voice
+-- plays it while it is stopped. otherwise it is shown waiting on its first
+-- chord, where play starts it
+local function chord_playing()
+  return transport_run or chord_voice.is_on()
+end
+
+local function display_chord_step()
+  return chord_playing() and current_chord_step() or 1
+end
+
+-- the led of a step of the progression on the grid: played steps dim, the
+-- ones to come dimmer, and the current one brightens bar by bar. it counts
+-- in a change with 4 blinks: on the beats of its last bar, on 1/8 notes when
+-- it is shorter than a bar, on 1/16 notes when it is a beat long
+local CHORD_LED_PLAYED, CHORD_LED_TO_COME = 3, 1
+local function chord_led(s)
+  local step, pos = 1, 0
+  if chord_playing() then step, pos = chord_position() end
+  if s < step then return CHORD_LED_PLAYED end
+  if s > step then return CHORD_LED_TO_COME end
+  if not chord_playing() then return 8 end
+  local beats = chord.beats[step]
+  local blink = beats >= 4 and 1 or (beats > 1 and 1/2 or 1/4)
+  if pos >= beats - 4*blink then
+    return (pos / blink) % 1 < 0.5 and 15 or 2
+  end
+  local bars = math.ceil(beats / 4)
+  if bars == 1 then return 8 end
+  return 8 + util.round(7 * math.floor(pos / 4) / (bars - 1))
+end
+
+-- the leds of the progression as a string, "" when it isn't shown, so the
+-- grid is redrawn only when one of them changes
+local shown_chord_leds = ""
+-- and the screen when the chord count changes
+local shown_chord_step = false
+local function chord_leds()
+  if not chord_shown() then return "" end
+  local leds = {}
+  for s = 1,chord.steps do leds[s] = chord_led(s) end
+  return table.concat(leds, ",")
 end
 
 -- the steps of the selected scale in an octave, ending with the octave as
@@ -423,7 +482,7 @@ local function update_chord()
     return
   end
   local len = #intervals - 1 -- the last interval is the octave
-  local degree = (chord.degree[current_chord_step()] - 1) % len + 1
+  local degree = (chord.degree[display_chord_step()] - 1) % len + 1
   local key = coll.."/"..period.."/"..degree.."/"..chord.stride.."/"..(chord.sevenths and 7 or 5)
   if key == chord.key then return end
   chord.key = key
@@ -1826,10 +1885,15 @@ function redraw()
     screen.text("low: "..lo_string.." // high: "..hi_string)
     screen.move(48,32)
     screen.level(edit == "clock" and 15 or 2)
-    screen.text("time: "..ppqn_string)
-    if chord.name and (chord.follow[1] or chord.follow[2] or chord_voice.is_on()) then
-      screen.level(8)
+    screen.text("t: "..ppqn_string)
+    if chord_shown() then
+      -- the chord and where it is in the progression
+      local count = display_chord_step().."/"..chord.steps
       screen.move(127,32)
+      screen.level(4)
+      screen.text_right(count)
+      screen.move(127 - screen.text_extents(count) - 4,32)
+      screen.level(8)
       screen.text_right(chord.name)
     end
     
@@ -2283,6 +2347,17 @@ function redraw_clock()
       morph_arm_blink = (morph_arm_blink + MORPH_ARM_BLINK_RATE / 30) % 1
       grid_dirty = true
     end
+    local leds = chord_leds()
+    if leds ~= shown_chord_leds then
+      shown_chord_leds = leds
+      grid_dirty = true
+    end
+    local step = chord_shown() and display_chord_step()
+    if step ~= shown_chord_step then
+      shown_chord_step = step
+      update_chord() -- the name, also while nothing plays the progression
+      screen_dirty = true
+    end
     if grid_dirty then
       grid_redraw()
       grid_dirty = false
@@ -2379,6 +2454,13 @@ function grid_redraw()
       local level = 4
       if morph_armed == i then level = morph_arm_blink < 0.5 and 15 or 0 end
       g:led(6+i,8,level)
+    end
+
+    --the chord progression: a led per chord
+    if chord_shown() then
+      for s = 1,chord.steps do
+        g:led(s,7,chord_led(s))
+      end
     end
 
     g:led(14,6,2) --clear selected preset

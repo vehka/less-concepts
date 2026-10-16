@@ -16,7 +16,9 @@ the sequencer can be started and stopped: on the grid at (1,8), or (1,5) on a 64
 
 the *chord progression* group holds up to 8 chords, each a degree of the scale and a length in beats. a voice set to *follow* the chords has its notes moved to the nearest tone of the chord that plays. *snap strength* sets how often, so some notes can stay as passing tones.
 
-the chords are built in the scale, so every scale works. *sevenths* adds a fourth tone, and *stride* sets the degrees between the tones: 2 stacks thirds, 1 makes clusters, 3 fourths. the progression counts the beats played since play, and the chord that plays is shown on the screen next to the time division.
+the chords are built in the scale, so every scale works. *sevenths* adds a fourth tone, and *stride* sets the degrees between the tones: 2 stacks thirds, 1 makes clusters, 3 fourths. the progression counts the beats played since play, and the chord that plays is shown on the screen next to the time division, with its place in the progression (2/4 is the second of four chords).
+
+on a 128 grid the progression is on the left half of row 7, a key per chord: the chords played are dim, the ones to come dimmer, and the one that plays brightens bar by bar. it blinks 4 times before the next chord: on the beats of its last bar, on 1/8 notes when it is shorter than a bar, on 1/16 notes when it is a beat long. while the sequencer is stopped, the screen and grid show the progression waiting on its first chord, where play starts it, unless the chord voice plays it on.
 
 ## chord voice
 
