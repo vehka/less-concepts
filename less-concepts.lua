@@ -253,7 +253,6 @@ local start_pending = false
 
 local function start()
   p_duration_counter = 1
-  selected_preset = preset_count > 0 and 1 or 0
   ppqn_counter = math.huge -- the first step plays on the next tick
   lfos.reset()
   stopped_ticks = 0
