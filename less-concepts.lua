@@ -2875,6 +2875,20 @@ morph.beats_to = function(where)
   if left < total / 4 then left = left + total end
   return left
 end
+-- a morph length, moved to the last chord end that comes at most a beat
+-- after it. one less than a quarter of the length away is too soon, and
+-- with no chord end in between the length stays as it is
+morph.snap = function(beats)
+  local step, pos = chord_position()
+  local edge = chord.beats[step] - pos
+  local snapped = beats
+  while edge <= beats + 1 do
+    if edge >= beats / 4 then snapped = edge end
+    step = step % chord.steps + 1
+    edge = edge + chord.beats[step]
+  end
+  return snapped
+end
 
 function preset_remove(set)
   if set > 0 then

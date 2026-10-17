@@ -41,6 +41,9 @@ function morph.finish(slot, snapshot) end
 -- redefine in user script: the beats to the end of the chord ("chord") or
 -- of the chord progression ("prog")
 function morph.beats_to(where) return 4 end
+-- redefine in user script: a length in beats, moved to end with a chord
+-- when one ends near it
+function morph.snap(beats) return beats end
 
 -- the steps of a field, from one value to another, evenly spaced: one step
 -- lands in the middle, the last just before the end
@@ -72,11 +75,13 @@ end
 
 --- the length of a morph in beats: of morph 1 or 2 from its param, or "prog"
 --- to the end of the chord progression. it is counted when the morph starts,
---- so a progression changed while it runs no longer lines up with it
+--- so a progression changed while it runs no longer lines up with it. with
+--- snap on, a length in bars ends with a chord when one ends near it
 function morph.length(i)
   local length = i == "prog" and "prog" or lengths[params:get("morph_length_" .. i)][2]
-  if type(length) == "number" then return length end
-  return morph.beats_to(length)
+  if type(length) ~= "number" then return morph.beats_to(length) end
+  if params:string("morph_snap") == "on" then return morph.snap(length) end
+  return length
 end
 
 --- start a morph to a snapshot, from the values in from. a field missing
@@ -129,10 +134,11 @@ end
 function morph.add_params()
   local names = {}
   for k, l in ipairs(lengths) do names[k] = l[1] end
-  params:add_group("morph", 2)
+  params:add_group("morph", 3)
   for i = 1, 2 do
     params:add_option("morph_length_" .. i, "morph " .. i .. " length", names, DEFAULT_LENGTHS[i])
   end
+  params:add_option("morph_snap", "snap to chords", { "off", "on" }, 1)
 end
 
 return morph
