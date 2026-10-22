@@ -22,18 +22,55 @@ on a 128 grid the progression is on the left half of row 7, a key per chord: the
 
 ## chord voice
 
-the *chord voice* group adds a third voice that plays chords on passersby or an nb voice: as a block chord, or arpeggiated up, down, up-down or at random, at a rate from a bar to 1/16.
+the *chord voice* group adds a third voice that plays chords on passersby, an nb voice or midi: as a block chord, arpeggiated up, down, up-down or at random, at a rate from a bar to 1/16, or held (*hold*: each chord sounds until the next one).
 
 - **follow progression** plays the chords of the progression, for trying one out. it keeps playing while the sequencer is stopped: switch it off to silence it.
-- **one-shot** plays the chord on a chosen degree once, right away: a block chord, or one pass of the arpeggio. map *play one-shot* to a midi controller to play chords by hand.
+- **one-shot** plays the chord on a chosen degree once, right away: a block chord, or one pass of the arpeggio. held, it sounds until the next one-shot. map *play one-shot* to a midi controller to play chords by hand.
 
-passersby has one voice, shared with the other two voices, so a block chord plays there as an arpeggio.
+passersby has one voice, shared with the other two voices, so a block or held chord plays there as an arpeggio.
+
+### voicing
+
+the chord is played in parts, the lowest first:
+
+- **parts**: as many as the chord has tones, or 2 to 4. with fewer parts than tones the 5th is left out first, then the root, so a seventh chord in two parts plays its 3rd and 7th. with more parts, the root is doubled, then the 5th.
+- **voicing**: *close* stacks the tones as near as they go, *drop-2* drops the second highest an octave, *open* lifts the second lowest an octave, for a wider chord.
+- **voice leading**: picks the inversion that moves the parts the least from the last chord, so each part moves in small steps and a tone the chords share stays where it is. off, every chord is in root position.
+- **bass**: *root below* gives the lowest part the root, below the other parts.
+
+held, a part that keeps its note from one chord to the next is tied over instead of played again.
+
+### midi parts
+
+the *midi* output sends each part on its own channel, *part 1 midi ch* to *part 4 midi ch*: part 1 is the lowest. this is for a synth with mono tracks, like the elektron analog four, where each part gets a track and its own sound. a part plays one note at a time, and with *microtune* on, each part bends its own channel. the notes go to the *midi (out)* device. only the channels of the parts that play are shown: set *parts* to 2 or 3 to leave the other tracks free.
+
+### midi channels
+
+on a synth with mono tracks, two sources on one channel cut each other off. a channel setting that shares its channel with another source says so in the params menu: *3 ! h1* is channel 3, where the harmony of vox 1 sends too. the sources are v1 and v2 for the voices (*midi ch A* and *B*), h1 and h2 for their harmonies, and p1 to p4 for the chord voice's parts.
+
+## harmony
+
+the *harmony* group gives each of the two voices a shadow: a second note that plays with each of its notes, on its own midi channel (*harmony -> midi*, *harmony midi ch*) or nb voice. it has the voice's length, octave, legato and tuning.
+
+**vox 1/2 harmony vel** (velocity) is relative to the voice: 0% plays at the voice's velocity, +100% at the loudest, -100% is silent, and in between it goes evenly to each end.
+
+- **3rd / 6th above / below**: two or five degrees away in the scale, so the harmony stays in the key: thirds and sixths in a seven note scale. a note outside the scale keeps its distance from the degree below it.
+- **chord tone above / below**: the next tone of the chord that plays, for a harmony that sits in the progression. best with the voice following the chords, so both are chord tones. without a chord it plays a 3rd.
+- **contrary**: when the voice goes up, the harmony goes down as many degrees, and the other way round. it stays a 3rd to a 10th below the voice, and goes back to a 6th below when it moves out. it starts over from a 6th below with play.
+
+the *harmony* group of the param lfos moves both voices' harmony modes and velocities. an lfo on a mode steps through the modes in their order, *off* too, so the harmony drops out for a while; the menu keeps showing the mode that is set. an lfo on the velocity fades the harmony in and out.
+
+in olafur the notes of the pool are the scale. in z_tuning steps a degree is a step of the tuning, so a 3rd is two steps.
+
+### four voices on the analog four
+
+for example: vox 1 on *midi ch A* = 1 and vox 2 on *midi ch B* = 2, their harmonies on channels 3 and 4, for a track each. or the chord voice on *midi* with four parts on channels 1 to 4, *hold*, *voice leading* on and *bass* on *root below*, for a four part pad that moves smoothly from chord to chord. or two parts of the chord voice (its 3rd and 7th) on tracks 3 and 4 under the two voices.
 
 ## lfos
 
 three lfos move the bits, low/high and the octaves around the values that are set, in whole steps. the values that are set stay as they are, so snapshots aren't changed. a target is one voice, both, or both in opposite directions (*contrary*). on the grid, (6,3), (9,3) and (12,3) switch them on and off, next to the randomize buttons of what they move; (3,5) to (5,5) on a 64 grid. shape, cycle, depth and target are in the *lfos* group, with *randomize lfos*.
 
-four more lfos, in *param lfos*, each move a parameter or send a midi cc. a target is picked by group: less concepts, passersby, w/syn, the nb voices in use, or a midi cc. a parameter gets its own value back when the lfo lets go of it.
+four more lfos, in *param lfos*, each move a parameter or send a midi cc. a target is picked by group: less concepts, harmony, passersby, w/syn, the nb voices in use, or a midi cc. a parameter gets its own value back when the lfo lets go of it.
 
 the cycles are counted in beats since play, so the lfos start over with the sequence and stand still while it is stopped.
 

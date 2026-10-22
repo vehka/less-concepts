@@ -25,7 +25,10 @@
 -- nb voices, if nb is installed
 -- chord progression: voices
 -- can snap to its chords, and
--- a chord voice can play it
+-- a chord voice can play it,
+-- voiced in parts on midi chs
+-- harmony: a shadow note for
+-- each voice, on its own ch
 -- z_tuning mod: tunings, and a
 -- "z_tuning steps" scale
 -- lfos: bits, low/high, octaves,
@@ -73,6 +76,7 @@ passersby = include "passersby/lib/passersby_engine"
 refrain = include "lib/refrain"
 local lfos = include "lib/lfos"
 local chord_voice = include "lib/chord_voice"
+local harmony = include "lib/harmony"
 local note_lengths = include "lib/note_lengths"
 local morph = include "lib/morph"
 -- optional: https://github.com/sixolet/nb lets the voices play nb players.
@@ -265,6 +269,7 @@ local function start()
   lfos.reset()
   stopped_ticks = 0
   chord_voice.reset()
+  harmony.reset()
   transport_run = true
 end
 
@@ -521,6 +526,29 @@ local function snap_to_chord(note)
   return note
 end
 
+-- what a harmony is worked out from: the scale's intervals, or in olafur
+-- the pitch classes of the note pool as a scale, and the chord's tones
+local function harmony_context()
+  local intervals = scale_intervals()
+  if intervals == nil then
+    local in_pool = {}
+    for _, n in ipairs(notes[coll]) do in_pool[n % 12] = true end
+    local pcs = {}
+    for pc = 0,11 do
+      if in_pool[pc] then table.insert(pcs, pc) end
+    end
+    if #pcs > 0 then
+      table.insert(pcs, 12)
+      intervals = pcs
+    end
+  end
+  return {
+    intervals = intervals,
+    period = period,
+    tones = chord.name and chord.tones or nil
+  }
+end
+
 -- the chord voice plays the chord from C3 + transpose, where the engine voices start
 chord_voice.notes = function()
   update_chord()
@@ -706,10 +734,68 @@ local function in_tuning(tuning, f)
 end
 chord_voice.in_tuning = in_tuning
 
+-- every channel a voice, a harmony or a chord part sends to
 local function midi_center_bend()
   if m == nil then return end
-  m:pitchbend(8192, params:get("midi_A"))
-  m:pitchbend(8192, params:get("midi_B"))
+  local chs = {params:get("midi_A"), params:get("midi_B")}
+  for _, ch in ipairs(harmony.midi_channels()) do table.insert(chs, ch) end
+  for _, ch in ipairs(chord_voice.midi_channels()) do table.insert(chs, ch) end
+  local sent = {}
+  for _, ch in ipairs(chs) do
+    if not sent[ch] then m:pitchbend(8192, ch) end
+    sent[ch] = true
+  end
+end
+
+-- what sends to each midi channel, by short names: v1 and v2 for the voices,
+-- h1 and h2 for their harmonies, p1 to p4 for the chord voice's parts. on a
+-- synth with mono tracks two of them on one channel cut each other off
+local function midi_sources()
+  local sources = {}
+  if params.lookup["voice_2_midi_B"] == nil then return sources end
+  local function add(ch, name)
+    sources[ch] = sources[ch] or {}
+    for _, n in ipairs(sources[ch]) do
+      if n == name then return end
+    end
+    table.insert(sources[ch], name)
+  end
+  for i = 1,2 do
+    for _, x in ipairs({"A", "B"}) do
+      if params:get("voice_"..i.."_midi_"..x) == 2 then add(params:get("midi_"..x), "v"..i) end
+    end
+  end
+  for _, list in ipairs({{harmony.midi_channels()}, {chord_voice.midi_channels()}}) do
+    local chs, names = list[1], list[2]
+    for k, ch in ipairs(chs) do add(ch, names[k]) end
+  end
+  return sources
+end
+
+-- the other sources on a channel than those in own, as "h1,p2", or nil
+local function midi_clash(ch, own)
+  local others = {}
+  for _, name in ipairs(midi_sources()[ch] or {}) do
+    if not own[name] then table.insert(others, name) end
+  end
+  if #others == 0 then return nil end
+  return table.concat(others, ",")
+end
+harmony.clash = function(ch, own) return midi_clash(ch, {[own] = true}) end
+chord_voice.clash = function(ch, own) return midi_clash(ch, {[own] = true}) end
+
+-- midi ch A and B: the voices that send to it are its own
+local function midi_ch_formatter(x)
+  return function(p)
+    local ch = p:get()
+    local own = {}
+    if params.lookup["voice_2_midi_B"] == nil then return tostring(ch) end
+    for i = 1,2 do
+      if params:get("voice_"..i.."_midi_"..x) == 2 then own["v"..i] = true end
+    end
+    local other = next(own) and midi_clash(ch, own)
+    return other and ch.." ! "..other or tostring(ch)
+  end
 end
 
 -- the scales start on C, but z_tuning builds its tuning from its own root
@@ -740,13 +826,20 @@ local function midi_out_allowed()
     or params:get("olafur_device") ~= params:get("midi_device")
 end
 
+-- the chord voice sends its parts to the midi out, microtuned like the voices
+chord_voice.midi_out = function()
+  if m and midi_out_allowed() then return m end
+end
+chord_voice.midi_note = function(note) return midi_tuned_note(note) end
+
 -- a voice plays one note at a time. voice[n].sounding is what it sent:
--- the midi notes with their channels, the nb note, and the tick it ends on
+-- the midi notes with their channels, the nb notes with their players (the
+-- voice's and its harmony's), and the tick it ends on
 local tick = 0
 
 local function end_note(s)
   for _, x in ipairs(s.midi) do m:note_off(x.note, 0, x.ch) end
-  if s.nb then s.nb.player:note_off(s.nb.note) end
+  for _, x in ipairs(s.nb) do x.player:note_off(x.note) end
 end
 
 function notes_off(n)
@@ -763,13 +856,18 @@ end
 
 -- before a new note of voice n is sent: cut the note that still plays.
 -- with legato it plays on, unless the new note has the same pitch: its note
--- off would end the new note too
-local function end_before(n, midi_note, nb_note)
+-- off would end the new note too. the new notes are lists: the voice's and
+-- its harmony's
+local function end_before(n, midi_notes, nb_notes)
   local old = voice[n].sounding
   if not old then return end
   local cut = not note_lengths.legato(n)
-  for _, x in ipairs(old.midi) do cut = cut or x.note == midi_note end
-  cut = cut or (old.nb ~= nil and old.nb.note == nb_note)
+  for _, x in ipairs(old.midi) do
+    for _, note in ipairs(midi_notes) do cut = cut or x.note == note end
+  end
+  for _, x in ipairs(old.nb) do
+    for _, note in ipairs(nb_notes) do cut = cut or x.note == note end
+  end
   if cut then notes_off(n) end
 end
 
@@ -872,7 +970,7 @@ local function iterate()
         end
       end
 
-      if chord.follow[1] or chord.follow[2] then update_chord() end
+      if chord.follow[1] or chord.follow[2] or harmony.needs_chord() then update_chord() end
       seed = next_seed
       bang()
       screennote = nil
@@ -898,10 +996,12 @@ local function iterate()
             end
             screennote = pitch
             gridnote = scaled
+            local harmony_pitch = harmony.pitch(i, pitch, harmony_context())
             local step_ticks = ppqn / ppqn_divisions[sel_ppqn_div]
             local length = note_lengths.pick(i, seed, mod_bit(i))
             local sounding = {
               midi = {},
+              nb = {},
               off_tick = tick + math.max(1, util.round(step_ticks * length))
             }
             in_tuning(voice_tuning[i], function()
@@ -909,7 +1009,13 @@ local function iterate()
               local engine_note = pitch+(48+(octave*period)+semi)
               local note = pitch+(48-period+(octave*period)+semi)
               local midi_note, bend = midi_tuned_note(note)
-              end_before(i, midi_note, engine_note)
+              -- the harmony is moved like the voice's note
+              local h_engine, h_midi, h_bend
+              if harmony_pitch then
+                h_engine = harmony_pitch+(48+(octave*period)+semi)
+                h_midi, h_bend = midi_tuned_note(harmony_pitch+(48-period+(octave*period)+semi))
+              end
+              end_before(i, {midi_note, h_midi}, {engine_note, h_engine})
               if params:get("voice_"..i.."_engine") == 2 then
                 engine.noteOn(i,midi_to_hz(engine_note),100)
               end
@@ -939,7 +1045,21 @@ local function iterate()
               if nb then
                 local player = params:lookup_param("voice_"..i.."_nb"):get_player()
                 player:note_on(engine_note,100/127)
-                sounding.nb = {player = player, note = engine_note}
+                table.insert(sounding.nb, {player = player, note = engine_note})
+              end
+              if harmony_pitch then
+                local ch = harmony.midi_channel(i)
+                local velocity = harmony.velocity(i, 100)
+                if ch and velocity and midi_out_allowed() then
+                  if h_bend then m:pitchbend(h_bend,ch) end
+                  m:note_on(h_midi,velocity,ch)
+                  table.insert(sounding.midi, {note = h_midi, ch = ch})
+                end
+                local player = harmony.nb_player(i)
+                if player and velocity then
+                  player:note_on(h_engine,velocity/127)
+                  table.insert(sounding.nb, {player = player, note = h_engine})
+                end
               end
             end)
             start_note(i, sounding)
@@ -1384,8 +1504,8 @@ function init()
       end
     end
   end)
-  params:add_number("midi_A", "midi ch A", 1,16,1)
-  params:add_number("midi_B", "midi ch B", 1,16,1)
+  params:add_number("midi_A", "midi ch A", 1,16,1, midi_ch_formatter("A"))
+  params:add_number("midi_B", "midi ch B", 1,16,1, midi_ch_formatter("B"))
   -- needs z_tuning: without it there's nothing to bend
   params:add_option("midi_microtune", "microtune (pitchbend)", {"off", "on"}, 1)
   params:set_action("midi_microtune", function(x)
@@ -1566,6 +1686,8 @@ function init()
   
   chord_add_params()
 
+  harmony.add_params(nb)
+
   note_lengths.add_params()
 
   morph.add_params()
@@ -1585,6 +1707,8 @@ function init()
     {name = "less concepts", params = {
       "gate prob 1", "gate prob 2", "tran prob 1", "tran prob 2",
       "transpose 1", "transpose 2", "global transpose", "chord_strength"}},
+    {name = "harmony", params = {
+      "harmony_1", "harmony_2", "harmony_1_velocity", "harmony_2_velocity"}},
     "passersby", "w/syn"}, nb_first, #params.params)
   lfos.send_cc = function(cc, value, channel)
     if m then m:cc(cc, value, channel) end

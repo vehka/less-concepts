@@ -140,6 +140,9 @@ update_param_lfos = function()
         new = util.clamp(util.round(l.center + move * 128), 0, 127)
       elseif p.t == params.tNUMBER then
         new = util.clamp(util.round(p:get() + move * (p.max - p.min)), p.min, p.max)
+      elseif p.t == params.tOPTION then
+        -- steps through the options
+        new = util.clamp(util.round(p:get() + move * (p.count - 1)), 1, p.count)
       else
         new = p:map_value(util.clamp(p:get_raw() + move, 0, 1))
       end
